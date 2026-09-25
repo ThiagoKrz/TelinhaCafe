@@ -1,0 +1,18 @@
+# Dependências
+node_modules/
+
+# Builds (os instaladores vão nos Releases do GitHub, não no código)
+dist/
+native/AudioCap.exe
+*.blockmap
+
+# Logs e lixo do sistema
+*.log
+npm-debug.log*
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editores
+.vscode/
+.idea/

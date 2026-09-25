@@ -1,0 +1,81 @@
+{
+  "name": "telinha",
+  "productName": "Telinha",
+  "version": "1.0.0",
+  "description": "Compartilhamento de tela e cÃ¢mera P2P para grupos de amigos",
+  "main": "src/main.js",
+  "author": "Thiago Krauzer",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ThiagoKrz/TelinhaCafe.git"
+  },
+  "homepage": "https://github.com/ThiagoKrz/TelinhaCafe",
+  "scripts": {
+    "start": "electron .",
+    "build:native": "powershell -ExecutionPolicy Bypass -File native/build.ps1",
+    "build:icon": "powershell -ExecutionPolicy Bypass -File build/make-icon.ps1",
+    "dist": "npm run build:native && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.5"
+  },
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "br.telinha.app",
+    "productName": "Telinha",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "node_modules/peerjs/dist/peerjs.min.js"
+    ],
+    "extraResources": [
+      {
+        "from": "native/AudioCap.exe",
+        "to": "AudioCap.exe"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "Telinha-${version}-portatil.exe"
+    },
+    "electronLanguages": [
+      "pt-BR",
+      "en-US"
+    ],
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Telinha",
+      "artifactName": "Telinha-Setup-${version}.exe",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

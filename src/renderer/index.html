@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' https://*.peerjs.com wss://*.peerjs.com blob:; worker-src 'self' blob:">
+  <title>Telinha</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ===== Tela inicial ===== -->
+<section id="home" class="screen">
+  <div class="home-card">
+    <div class="brand">
+      <img src="icon.png" alt="" class="brand-logo">
+      <div>
+        <h1>Telinha</h1>
+        <p>Tela e câmera com os amigos, direto entre vocês.</p>
+      </div>
+    </div>
+
+    <div class="profile-row">
+      <button id="avatarBtn" class="avatar-pick" title="Escolher foto de perfil">
+        <span id="avatarPreview" class="avatar xl"></span>
+        <span class="avatar-edit">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        </span>
+      </button>
+      <label class="field grow">
+        <span>Seu nome <button id="avatarRemove" class="link hidden" type="button">remover foto</button></span>
+        <input id="nameInput" maxlength="24" autocomplete="off" placeholder="Como os amigos te veem">
+      </label>
+    </div>
+    <input type="file" id="avatarFile" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden>
+
+    <button id="createBtn" class="btn primary big">Criar sala</button>
+
+    <div class="divider"><span>ou entre com um código</span></div>
+
+    <div class="join-row">
+      <input id="codeInput" maxlength="6" autocomplete="off" spellcheck="false" placeholder="CÓDIGO">
+      <button id="joinBtn" class="btn">Entrar</button>
+    </div>
+
+    <div id="recentRooms" class="recent hidden"></div>
+
+    <p id="homeStatus" class="status" role="status"></p>
+    <div class="home-foot muted" id="versionText"></div>
+  </div>
+</section>
+
+<!-- ===== Sala ===== -->
+<section id="room" class="screen hidden">
+  <header class="topbar">
+    <div class="room-info">
+      <span class="muted">Sala</span>
+      <button id="codeBtn" class="code-chip" title="Copiar código">
+        <span id="codeText">------</span>
+        <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>
+      </button>
+      <span id="roleBadge" class="badge hidden">Você é o host</span>
+      <span id="lockBadge" class="badge warn hidden">Trancada</span>
+    </div>
+
+    <div class="controls">
+      <button id="screenBtn" class="btn ctl">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 3H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h5v2H7v2h10v-2h-2v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 13H4V5h16v11z"/></svg>
+        <span>Compartilhar tela</span>
+      </button>
+      <button id="switchBtn" class="btn ctl hidden" title="Trocar a tela/janela sem parar de transmitir">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6.99 11 3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/></svg>
+        <span>Trocar</span>
+      </button>
+      <button id="annotBtn" class="btn ctl icon-only hidden">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+      </button>
+      <select id="qualityLive" class="ctl-select hidden" title="Qualidade da sua tela"></select>
+      <button id="camBtn" class="btn ctl">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+        <span>Câmera</span>
+      </button>
+      <select id="camSelect" class="ctl-select hidden" title="Escolher câmera"></select>
+
+      <div class="react-wrap">
+        <button id="reactBtn" class="btn ctl icon-only" title="Reagir">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-3.5-9A1.5 1.5 0 1 0 8.5 8a1.5 1.5 0 0 0 0 3zm7 0A1.5 1.5 0 1 0 15.5 8a1.5 1.5 0 0 0 0 3zM12 17.5a5.5 5.5 0 0 0 5.1-3.5H6.9a5.5 5.5 0 0 0 5.1 3.5z"/></svg>
+        </button>
+        <div id="reactBar" class="react-bar hidden"></div>
+      </div>
+      <button id="chatBtn" class="btn ctl icon-only" title="Chat e pessoas">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 14H5.2L4 17.2V4h16v12z"/></svg>
+        <span id="unread" class="dot hidden"></span>
+      </button>
+      <button id="settingsBtn" class="btn ctl icon-only" title="Configurações">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 0-.5.4l-.4 2.7a7.3 7.3 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.6c0 .3.2.5.5.5h4c.3 0 .5-.2.5-.4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6L19.4 13zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg>
+      </button>
+      <button id="leaveBtn" class="btn danger">Sair</button>
+    </div>
+  </header>
+
+  <main class="room-body">
+    <div id="stage">
+      <div id="hiddenBar" class="hidden-bar hidden"></div>
+      <div id="focusArea" class="hidden"></div>
+      <div id="grid"></div>
+      <div id="reactions"></div>
+      <div id="emptyState">
+        <div class="empty-icon">
+          <svg viewBox="0 0 24 24" width="40" height="40"><path fill="currentColor" d="M20 3H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h5v2H7v2h10v-2h-2v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 13H4V5h16v11z"/></svg>
+        </div>
+        <h2>Ninguém está compartilhando ainda</h2>
+        <p>Passe o código <b id="emptyCode"></b> pros amigos e clique em <b>Compartilhar tela</b> ou <b>Câmera</b>.</p>
+      </div>
+    </div>
+
+    <aside id="side">
+      <div class="people">
+        <h3>Na sala <span id="peopleCount" class="muted"></span></h3>
+        <p id="hostAway" class="host-away hidden">O host está fora da sala.</p>
+        <ul id="peopleList"></ul>
+      </div>
+      <div class="chat">
+        <div id="chatLog"></div>
+        <form id="chatForm" autocomplete="off">
+          <input id="chatInput" maxlength="500" placeholder="Mensagem…">
+          <button class="btn primary" type="submit">Enviar</button>
+        </form>
+      </div>
+    </aside>
+  </main>
+</section>
+
+<!-- ===== Menu de uma pessoa (host) ===== -->
+<div id="personMenu" class="menu hidden"></div>
+
+<!-- ===== Configurações ===== -->
+<div id="settings" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card narrow">
+    <div class="modal-head">
+      <h2>Configurações</h2>
+      <button id="settingsClose" class="icon-btn plain" title="Fechar">✕</button>
+    </div>
+    <div id="settingsBody" class="settings-body"></div>
+  </div>
+</div>
+
+<!-- ===== Seletor de tela ===== -->
+<div id="picker" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="pickerTitle">Compartilhar</h2>
+      <div class="tabs">
+        <button class="tab active" data-tab="screen">Telas</button>
+        <button class="tab" data-tab="window">Janelas</button>
+      </div>
+    </div>
+    <div id="sourceGrid" class="source-grid"></div>
+
+    <div class="picker-options">
+      <fieldset>
+        <legend>Áudio</legend>
+        <label class="radio" id="optNoDiscord">
+          <input type="radio" name="audioMode" value="nodiscord">
+          <span><b>Som do PC, sem o Discord</b><small id="noDiscordHint">Todo mundo ouve o PC, menos a call. Sem eco.</small></span>
+        </label>
+        <label class="radio" id="optApp">
+          <input type="radio" name="audioMode" value="app">
+          <span class="grow"><b>Só o som de…</b>
+            <span class="app-row"><select id="appSelect"></select><button id="appRefresh" class="btn small" title="Atualizar lista">↻</button></span>
+            <small id="appHint"></small>
+          </span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="audioMode" value="full">
+          <span><b>Som do PC completo</b><small>Inclui o Discord. Quem estiver na call ouve eco.</small></span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="audioMode" value="none">
+          <span><b>Sem áudio</b><small>Só a imagem.</small></span>
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>Qualidade</legend>
+        <select id="qualitySelect"></select>
+        <small class="muted" id="qualityHint"></small>
+      </fieldset>
+    </div>
+
+    <div class="modal-foot">
+      <button id="pickerCancel" class="btn">Cancelar</button>
+      <button id="pickerShare" class="btn primary" disabled>Compartilhar</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<script src="../../node_modules/peerjs/dist/peerjs.min.js"></script>
+<script src="annot.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
