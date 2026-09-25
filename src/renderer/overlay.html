@@ -2,20 +2,21 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; font-src 'self'">
   <title>Telinha · ponteiros</title>
   <style>
+    @font-face { font-family: 'Exo 2'; font-weight: 700; src: url('fonts/exo-2-latin-700-normal.woff2') format('woff2'); }
     html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; pointer-events: none; }
     canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; }
     #banner {
       position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-      padding: 10px 18px; border-radius: 12px; font: 600 15px "Segoe UI", sans-serif; color: #fff;
-      background: rgba(20, 24, 32, .92); border: 2px solid #5b8cff; box-shadow: 0 8px 30px rgba(0,0,0,.5);
+      padding: 10px 18px; border-radius: 12px; font: 700 15px 'Exo 2', "Segoe UI", sans-serif; color: #F1DFC8;
+      background: rgba(36, 29, 26, .94); border: 2px solid #D4A373; box-shadow: 0 8px 30px rgba(0,0,0,.5);
       display: none; white-space: nowrap;
     }
     #banner.show { display: block; }
-    #banner.warn { border-color: #f5a524; }
-    #banner.live { border-color: #2ecc71; }
+    #banner.warn { border-color: #E6BA86; }
+    #banner.live { border-color: #86C07A; }
   </style>
 </head>
 <body>

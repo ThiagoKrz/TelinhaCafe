@@ -3,10 +3,11 @@ const path = require('path');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
 
-// Perfil separado (ex.: rodar duas instâncias na mesma máquina pra testar).
-if (process.env.TELINHA_PROFILE) {
-  app.setPath('userData', path.join(app.getPath('appData'), 'Telinha-' + process.env.TELINHA_PROFILE.replace(/[^\w-]/g, '')));
-}
+// Os dados do app (nome, foto, chaves de host) ficam sempre em %APPDATA%\Telinha, mesmo com o
+// produto agora chamado "Telinha Café": assim quem atualiza não perde nada.
+// TELINHA_PROFILE cria um perfil separado (ex.: duas instâncias na mesma máquina pra testar).
+app.setPath('userData', path.join(app.getPath('appData'),
+  process.env.TELINHA_PROFILE ? 'Telinha-' + process.env.TELINHA_PROFILE.replace(/[^\w-]/g, '') : 'Telinha'));
 
 let win = null;
 let overlayWin = null;       // camada transparente com os ponteiros dos amigos, por cima da tela compartilhada
@@ -26,8 +27,8 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: '#0e1014',
-    title: 'Telinha',
+    backgroundColor: '#2A2320',
+    title: 'Telinha Café',
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'renderer', 'icon.png'),
     webPreferences: {

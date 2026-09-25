@@ -1,8 +1,8 @@
 {
   "name": "telinha",
-  "productName": "Telinha",
-  "version": "1.1.0",
-  "description": "Compartilhamento de tela e cÃ¢mera P2P para grupos de amigos",
+  "productName": "Telinha Café",
+  "version": "1.2.0",
+  "description": "Telinha Café: compartilhamento de tela e câmera P2P para grupos de amigos, no estilo Fate Café",
   "main": "src/main.js",
   "author": "Thiago Krauzer",
   "license": "MIT",
@@ -15,19 +15,21 @@
   "scripts": {
     "start": "electron .",
     "build:native": "powershell -ExecutionPolicy Bypass -File native/build.ps1",
-    "build:icon": "powershell -ExecutionPolicy Bypass -File build/make-icon.ps1",
+    "build:icon": "electron build/make-icon.js",
     "dist": "npm run build:native && electron-builder --win --x64"
   },
   "dependencies": {
     "peerjs": "^1.5.5"
   },
   "devDependencies": {
+    "@fontsource/exo-2": "^5.3.0",
+    "@fontsource/open-sans": "^5.3.0",
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "br.telinha.app",
-    "productName": "Telinha",
+    "productName": "Telinha Café",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -65,7 +67,7 @@
       "icon": "build/icon.ico"
     },
     "portable": {
-      "artifactName": "Telinha-${version}-portatil.exe"
+      "artifactName": "TelinhaCafe-${version}-portatil.exe"
     },
     "electronLanguages": [
       "pt-BR",
@@ -77,9 +79,10 @@
       "runAfterFinish": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Telinha",
-      "artifactName": "Telinha-Setup-${version}.exe",
+      "shortcutName": "Telinha Café",
+      "artifactName": "TelinhaCafe-Setup-${version}.exe",
       "deleteAppDataOnUninstall": false
-    }
+    },
+    "executableName": "Telinha"
   }
 }

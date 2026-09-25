@@ -1,14 +1,16 @@
-# Telinha
+# Telinha Café
 
-Compartilhamento de tela e câmera entre amigos (até 6 pessoas), direto P2P via WebRTC.
+Compartilhamento de tela e câmera entre amigos (até 6 pessoas), direto P2P via WebRTC. Um app do **Fate Café**.
+
+☕ **[Apoie o Fate Café!](https://livepix.gg/fatecafe)** (Pix pelo LivePix)
 
 ## Baixar
 Última versão em **[Releases](https://github.com/ThiagoKrz/TelinhaCafe/releases/latest)**.
 
 ## Instalar
-- **`Telinha-Setup-1.1.0.exe`** (recomendado): instala só pro seu usuário (não pede administrador),
+- **`TelinhaCafe-Setup-1.2.0.exe`** (recomendado): instala só pro seu usuário (não pede administrador),
   cria atalho na área de trabalho e no menu Iniciar. Pra atualizar, é só rodar o instalador da versão nova por cima.
-- **`Telinha-1.1.0-portatil.exe`**: roda sem instalar (demora uns segundos a mais pra abrir).
+- **`TelinhaCafe-1.2.0-portatil.exe`**: roda sem instalar (demora uns segundos a mais pra abrir).
 - Na 1ª vez o Windows pode mostrar "O Windows protegeu o computador" → **Mais informações → Executar assim mesmo**
   (o app não é assinado).
 - **Todo mundo da sala precisa da mesma versão.** Se não for, o app avisa quem precisa atualizar.
@@ -74,18 +76,20 @@ As duas primeiras precisam de Windows 11 ou Windows 10 atualizado; se não der, 
 ```
 npm install
 npm start          # rodar em modo dev
-npm run dist       # gera dist/Telinha-Setup-x.y.z.exe e dist/Telinha-x.y.z-portatil.exe
+npm run dist       # gera dist/TelinhaCafe-Setup-x.y.z.exe e dist/TelinhaCafe-x.y.z-portatil.exe
 ```
 Requisitos pra compilar: Node.js 20+ e Windows (o `native/AudioCap.exe` é compilado com o `csc.exe` do .NET Framework
 que já vem no Windows).
 
 ### Lançar uma versão nova
 1. Suba `version` no `package.json` e rode `npm run dist`.
-2. Crie um Release no GitHub com a tag `vX.Y.Z` e anexe `dist/Telinha-Setup-X.Y.Z.exe` e `dist/Telinha-X.Y.Z-portatil.exe`.
+2. Crie um Release no GitHub com a tag `vX.Y.Z` e anexe `dist/TelinhaCafe-Setup-X.Y.Z.exe` e `dist/TelinhaCafe-X.Y.Z-portatil.exe`.
 - `src/main.js`: processo principal (seletor de tela, capturador de áudio, camada de ponteiros)
 - `src/renderer/app.js`: salas, WebRTC em malha, UI
 - `src/renderer/annot.js` + `overlay.html`: desenho de ponteiros/riscos
 - `native/AudioCap.cs`: captura WASAPI "process loopback" (sem Discord / só um app / só uma janela)
+- `build/make-icon.js`: gera o ícone a partir do logo do Fate Café (`npm run build:icon`)
+- Visual: cores, botões e fontes (Exo 2 + Open Sans, em `src/renderer/fonts`, licença OFL) seguem o site do Fate Café
 - `native/InputCtl.cs`: aplica mouse/teclado do controle remoto (SendInput)
 - Ao mudar o protocolo, suba `PROTO` em `app.js`, mas mantenha o formato da porta (`telinha-sala-CODIGO`) e as
   respostas `welcome`/`reject`, pra versões diferentes conseguirem pelo menos avisar "atualize".

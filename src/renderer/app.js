@@ -1,7 +1,7 @@
 'use strict';
 
 /* =========================================================================
-   Telinha — compartilhamento de tela/câmera P2P (WebRTC em malha via PeerJS)
+   Telinha Café — compartilhamento de tela/câmera P2P (WebRTC em malha via PeerJS)
 
    - Cada pessoa tem um ID pessoal aleatório no servidor do PeerJS e conecta
      direto em cada outra (malha).
@@ -24,6 +24,7 @@ const PEER_TIMEOUT_MS = 15000;
 const CONNECT_TIMEOUT_MS = 20000;
 const HEARTBEAT_MS = 2000;
 const DEAD_AFTER_MS = 12000;
+const DONATE_URL = 'https://livepix.gg/fatecafe';
 const REACTIONS = ['😂', '🔥', '👏', '😮', '❤️', '💀', '👀', '🎉'];
 
 // STUN pra descobrir o caminho direto + TURN público do PeerJS de reserva.
@@ -147,13 +148,13 @@ function cmpVersion(a, b) {
   return 0;
 }
 
-const PALETTE = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#0a84ff', '#bf5af2', '#ff2d55', '#ffffff', '#111111'];
+const PALETTE = ['#d4a373', '#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#0a84ff', '#bf5af2', '#ffffff', '#111111'];
 const isHex = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
 const myPtrColor = () => (isHex(state.ptrColor) ? state.ptrColor : colorFor(state.name || '?'));
 const myDrawColor = () => (isHex(state.drawColor) ? state.drawColor : colorFor(state.name || '?'));
 
 function colorFor(name) {
-  const palette = ['#5b8cff', '#e5484d', '#2ecc71', '#f5a524', '#a970ff', '#12a594', '#e54666', '#3e9bd1'];
+  const palette = ['#C8894F', '#A2564C', '#6E8F5E', '#B5754C', '#8B6A9E', '#4F8A8B', '#C0705C', '#7C8FB0'];
   let h = 0;
   for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return palette[h % palette.length];
@@ -518,7 +519,7 @@ function startSession(peer, code) {
     if (state.join) {
       const isDoor = e.type === 'peer-unavailable' && String(e.message).includes(DOOR_PREFIX + state.code);
       state.join.reject(isDoor
-        ? Object.assign(new Error('Sala não encontrada. Confira o código (e se vocês estão com a mesma versão do Telinha).'), { code: 'no-room' })
+        ? Object.assign(new Error('Sala não encontrada. Confira o código (e se vocês estão com a mesma versão do Telinha Café).'), { code: 'no-room' })
         : new Error(describePeerError(e)));
       return;
     }
@@ -641,7 +642,7 @@ function doorJoin(keys) {
       serialization: 'json',
       metadata: { room: state.code, v: PROTO, version: state.appVersion, clientId: state.clientId, hostSig },
     });
-    const noRoom = () => Object.assign(new Error('Sala não encontrada. Confira o código (e se vocês estão com a mesma versão do Telinha).'), { code: 'no-room' });
+    const noRoom = () => Object.assign(new Error('Sala não encontrada. Confira o código (e se vocês estão com a mesma versão do Telinha Café).'), { code: 'no-room' });
     // Se a conexão com a porta nem abre, ninguém está segurando ela (sala vazia ou código errado).
     const openTimer = setTimeout(() => done(reject, noRoom()), 8000);
     const done = (fn, arg) => {
@@ -681,8 +682,8 @@ function doorJoin(keys) {
         }[d.reason];
         if (d.reason === 'version') {
           msg = Number(d.proto) > PROTO
-            ? `A sala está numa versão mais nova do Telinha (${d.version || '?'}). A sua é ${state.appVersion}: atualize pra entrar.`
-            : `Quem está na sala usa uma versão mais antiga do Telinha (${d.version || '?'}). A sua é ${state.appVersion}: peça pra atualizarem.`;
+            ? `A sala está numa versão mais nova do Telinha Café (${d.version || '?'}). A sua é ${state.appVersion}: atualize pra entrar.`
+            : `Quem está na sala usa uma versão mais antiga do Telinha Café (${d.version || '?'}). A sua é ${state.appVersion}: peça pra atualizarem.`;
         }
         done(reject, new Error(msg || (typeof d.msg === 'string' ? d.msg.slice(0, 200) : 'Entrada recusada.')));
       }
@@ -738,7 +739,7 @@ function onDoorConnection(conn) {
     if (md.v !== PROTO) {
       conn.send({
         t: 'reject', reason: 'version', proto: PROTO, version: state.appVersion,
-        msg: `Versão diferente do Telinha: a sala usa a ${state.appVersion}. Atualize pra entrar.`,
+        msg: `Versão diferente do Telinha Café: a sala usa a ${state.appVersion}. Atualize pra entrar.`,
       });
       setTimeout(() => { try { conn.close(); } catch {} }, 3000);
       return;
@@ -957,8 +958,8 @@ async function handleData(p, d) {
       }
       if (first && p.version && cmpVersion(p.version, state.appVersion) !== 0) {
         addSystem(cmpVersion(p.version, state.appVersion) > 0
-          ? `${p.name} está com o Telinha ${p.version}, mais novo que o seu (${state.appVersion}). Vale atualizar.`
-          : `${p.name} está com o Telinha ${p.version}, mais antigo que o seu (${state.appVersion}). Peça pra atualizar.`);
+          ? `${p.name} está com o Telinha Café ${p.version}, mais novo que o seu (${state.appVersion}). Vale atualizar.`
+          : `${p.name} está com o Telinha Café ${p.version}, mais antigo que o seu (${state.appVersion}). Peça pra atualizar.`);
       }
       refreshTileLabels(p.id);
       updatePeopleUI();
@@ -2571,7 +2572,7 @@ function enterRoom(message) {
   $('#emptyCode').textContent = state.code;
   $('#roleBadge').classList.toggle('hidden', !state.amHost);
   $('#lockBadge').classList.toggle('hidden', !state.room.settings.locked);
-  document.title = `Telinha · ${state.code}`;
+  document.title = `Telinha Café · ${state.code}`;
   $('#chatLog').innerHTML = '';
   addSystem(message);
   setHomeStatus('');
@@ -2602,7 +2603,7 @@ function leaveRoom(reason) {
     renderHiddenBar();
     $('#room').classList.add('hidden');
     $('#home').classList.remove('hidden');
-    document.title = 'Telinha';
+    document.title = 'Telinha Café';
     renderRecentRooms();
     setHomeStatus(reason || '', !!reason);
   }, 250);
@@ -2983,9 +2984,19 @@ function renderSettings() {
   const about = settingsSection('Sobre');
   const v = document.createElement('small');
   v.className = 'muted';
-  v.textContent = `Telinha ${state.appVersion}${state.portable ? ' (portátil)' : ''}. Todo mundo da sala precisa usar a mesma versão.`;
+  v.textContent = `Telinha Café ${state.appVersion}${state.portable ? ' (portátil)' : ''}. Todo mundo da sala precisa usar a mesma versão.`;
   about.appendChild(v);
+  const donate = $('#donateBtn').cloneNode(true);
+  donate.removeAttribute('id');
+  donate.style.marginTop = '10px';
+  donate.addEventListener('click', openDonate);
+  about.appendChild(donate);
   body.appendChild(about);
+}
+
+// Abre o LivePix do Fate Café no navegador padrão (o app nunca navega pra fora).
+function openDonate() {
+  window.open(DONATE_URL, '_blank');
 }
 
 function openSettings() {
@@ -3197,6 +3208,7 @@ async function init() {
     if (a) setAvatar(a);
   });
   $('#avatarRemove').addEventListener('click', () => setAvatar(''));
+  $('#donateBtn').addEventListener('click', openDonate);
   renderHomeAvatar();
   renderRecentRooms();
   (nameInput.value ? codeInput : nameInput).focus();
