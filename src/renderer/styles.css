@@ -351,3 +351,42 @@ legend { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color
 
 .turn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
 .turn-grid input:first-child { grid-column: 1 / -1; }
+
+/* ---------- v1.1: controle remoto e cores ---------- */
+.ctrl-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-shrink: 0;
+  padding: 8px 12px; border-radius: 10px; background: #183a26; border: 1px solid #2a6b45; color: #d7ffe6;
+}
+.tile .ctrl-catch { position: absolute; inset: 0; display: none; cursor: default; outline: none; }
+.tile.controlling .ctrl-catch { display: block; }
+.tile.controlling { outline: 3px solid var(--live); outline-offset: -3px; }
+.tile.controlling .tile-bar { opacity: 1; z-index: 2; }
+.tile.controlling .tile-label { z-index: 2; }
+.icon-btn.b-ctrl.on { background: var(--live); color: #062; }
+.icon-btn.b-ctrl.waiting { animation: pulse 1s infinite alternate; }
+@keyframes pulse { from { background: rgba(255,255,255,.12); } to { background: #f5a524; } }
+
+.tile .draw-tools {
+  position: absolute; top: 8px; right: 8px; z-index: 3; display: none; align-items: center; gap: 4px;
+  padding: 5px 6px; border-radius: 10px; background: rgba(12,14,18,.82); backdrop-filter: blur(4px);
+}
+.tile.drawing .draw-tools { display: flex; }
+.swatch {
+  width: 20px; height: 20px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); cursor: pointer; padding: 0;
+}
+.swatch.on { border-color: #fff; box-shadow: 0 0 0 2px var(--accent); }
+.swatch-custom {
+  -webkit-appearance: none; appearance: none; width: 22px; height: 22px; padding: 0; border: none; cursor: pointer;
+  border-radius: 50%; background: conic-gradient(#ff3b30, #ffcc00, #34c759, #00c7be, #0a84ff, #bf5af2, #ff3b30);
+}
+.swatch-custom::-webkit-color-swatch-wrapper { padding: 3px; }
+.swatch-custom::-webkit-color-swatch { border: 2px solid rgba(255,255,255,.7); border-radius: 50%; }
+.tools-sep { width: 1px; height: 18px; background: rgba(255,255,255,.2); margin: 0 3px; }
+.draw-tools .size {
+  width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; border: none;
+  background: transparent; cursor: pointer;
+}
+.draw-tools .size i { display: block; border-radius: 50%; background: #fff; }
+.draw-tools .size.on { background: rgba(255,255,255,.18); }
+.color-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; flex-wrap: wrap; }
+.swatches { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

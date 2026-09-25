@@ -35,7 +35,8 @@
         let s = this.strokes.get(key);
         if (!s) {
           if (this.strokes.size > 60) return;
-          s = { pts: [], color, t: now, done: false };
+          const w = [1, 2, 3].includes(evt.w) ? evt.w : 1;
+          s = { pts: [], color, w, t: now, done: false };
           this.strokes.set(key, s);
         }
         for (const p of Array.isArray(evt.pts) ? evt.pts.slice(0, 300) : []) {
@@ -94,7 +95,7 @@
         if (s.pts.length < 2) continue;
         g.globalAlpha = age < STROKE_HOLD ? 1 : 1 - (age - STROKE_HOLD) / STROKE_FADE;
         g.strokeStyle = s.color;
-        g.lineWidth = Math.max(3, r.w / 380);
+        g.lineWidth = Math.max(3, r.w / 380) * (s.w === 3 ? 2.6 : s.w === 2 ? 1.7 : 1);
         g.beginPath();
         s.pts.forEach(([x, y], i) => (i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))));
         g.stroke();

@@ -101,6 +101,10 @@
 
   <main class="room-body">
     <div id="stage">
+      <div id="ctrlBar" class="ctrl-bar hidden">
+        <span>🖱 <b id="ctrlBarText"></b> <span class="muted">Ctrl+Alt+X também para.</span></span>
+        <button id="ctrlBarStop" class="btn danger small">Parar controle</button>
+      </div>
       <div id="hiddenBar" class="hidden-bar hidden"></div>
       <div id="focusArea" class="hidden"></div>
       <div id="grid"></div>
@@ -133,6 +137,23 @@
 
 <!-- ===== Menu de uma pessoa (host) ===== -->
 <div id="personMenu" class="menu hidden"></div>
+
+<!-- ===== Pedido de controle ===== -->
+<div id="ctrlPrompt" class="modal hidden" role="alertdialog" aria-modal="true">
+  <div class="modal-card narrow">
+    <div class="modal-head"><h2>🖱 Pedido de controle</h2></div>
+    <div class="settings-body">
+      <p id="ctrlPromptText" style="margin:0;font-size:15px"></p>
+      <small class="muted">A pessoa vai poder mexer no seu mouse e digitar no seu teclado, só na tela que você está compartilhando.
+        Você pode cortar a qualquer momento com <b>Ctrl+Alt+X</b>.</small>
+      <small id="ctrlPromptWarn" class="muted"></small>
+    </div>
+    <div class="modal-foot">
+      <button id="ctrlDeny" class="btn">Recusar <span class="muted">(Ctrl+Alt+N)</span></button>
+      <button id="ctrlAccept" class="btn primary">Aceitar <span>(Ctrl+Alt+Y)</span></button>
+    </div>
+  </div>
+</div>
 
 <!-- ===== Configurações ===== -->
 <div id="settings" class="modal hidden" role="dialog" aria-modal="true">

@@ -66,6 +66,13 @@ const state = {
   hidden: new Set(),           // "peerId:kind" que eu tirei da tela
   gone: new Map(),             // id -> quando saiu (não reconectar por fofoca desatualizada)
   annotAllow: loadPref('annotAllow', '1') === '1',
+  ctrlAllow: loadPref('ctrlAllow', '1') === '1',
+  ptrColor: loadPref('ptrColor', ''),
+  drawColor: loadPref('drawColor', ''),
+  drawSize: Number(loadPref('drawSize', '1')) || 1,
+  // Controle remoto. Como dono da tela: granted (quem controla) e pending (pedidos na fila).
+  // Como quem assiste: asking (pedi e estou esperando) e controlling (estou controlando).
+  ctrl: { granted: null, pending: [], asking: null, controlling: null, cooldown: new Map() },
   quality: loadPref('quality', '1080p60'),
   cameraId: loadPref('cameraId', ''),
   turn: loadTurn(),
@@ -139,6 +146,11 @@ function cmpVersion(a, b) {
   }
   return 0;
 }
+
+const PALETTE = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#0a84ff', '#bf5af2', '#ff2d55', '#ffffff', '#111111'];
+const isHex = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
+const myPtrColor = () => (isHex(state.ptrColor) ? state.ptrColor : colorFor(state.name || '?'));
+const myDrawColor = () => (isHex(state.drawColor) ? state.drawColor : colorFor(state.name || '?'));
 
 function colorFor(name) {
   const palette = ['#5b8cff', '#e5484d', '#2ecc71', '#f5a524', '#a970ff', '#12a594', '#e54666', '#3e9bd1'];
@@ -801,7 +813,11 @@ function broadcast(msg) {
 function sharingInfo(kind) {
   if (!state.local[kind]) return null;
   if (kind === 'camera') return {};
-  return { audio: !!(state.screenSel && state.screenSel.audioOn), annot: state.annotAllow };
+  return {
+    audio: !!(state.screenSel && state.screenSel.audioOn),
+    annot: state.annotAllow,
+    ctrl: state.ctrlAllow && sharingWholeScreen(),
+  };
 }
 
 function helloMsg() {
@@ -1016,6 +1032,31 @@ async function handleData(p, d) {
     case 'annot':
       onAnnot(p, d);
       break;
+    // --- controle remoto ---
+    case 'ctrl-req':
+      onCtrlRequest(p);
+      break;
+    case 'ctrl-grant':
+      if (state.ctrl.asking === p.id) startControlling(p);
+      break;
+    case 'ctrl-deny':
+      if (state.ctrl.asking === p.id) {
+        state.ctrl.asking = null;
+        state.ctrl.cooldown.set(p.id, Date.now());
+        toast(typeof d.reason === 'string' ? d.reason.slice(0, 160) : `${p.name} recusou o pedido de controle.`, 'error');
+        updateCtrlButtons();
+      }
+      break;
+    case 'ctrl-revoke':
+      if (state.ctrl.controlling === p.id) endControlling(`${p.name} encerrou o seu controle.`);
+      break;
+    case 'ctrl-release':
+      if (state.ctrl.granted === p.id) revokeControl(`${p.name} parou de controlar sua tela.`, false);
+      state.ctrl.pending = state.ctrl.pending.filter((x) => x !== p.id);
+      break;
+    case 'ci':
+      onCtrlInput(p, d);
+      break;
     case 'ping':
       send(p, { t: 'pong', ts: d.ts });
       break;
@@ -1035,8 +1076,13 @@ async function handleData(p, d) {
 function setSharing(p, kind, info) {
   const was = p.sharing[kind];
   p.sharing[kind] = info && typeof info === 'object'
-    ? (kind === 'screen' ? { audio: !!info.audio, annot: !!info.annot } : {})
+    ? (kind === 'screen' ? { audio: !!info.audio, annot: !!info.annot, ctrl: !!info.ctrl } : {})
     : null;
+  if (kind === 'screen' && !(p.sharing.screen && p.sharing.screen.ctrl)) {
+    // Parou de compartilhar a tela (ou desligou os pedidos): encerra meu controle/pedido.
+    if (state.ctrl.controlling === p.id) endControlling('O controle acabou.');
+    if (state.ctrl.asking === p.id) state.ctrl.asking = null;
+  }
   if (!p.sharing[kind]) {
     // Parou: esquece que eu tinha tirado da tela (se compartilhar de novo, aparece).
     state.hidden.delete(tileKey(p.id, kind));
@@ -1065,6 +1111,14 @@ function removePeer(id, silent = false) {
   removeTile(tileKey(id, 'camera'));
   state.hidden.delete(tileKey(id, 'screen'));
   state.hidden.delete(tileKey(id, 'camera'));
+  if (state.ctrl.granted === id) revokeControl(`${p.name} saiu; o controle da sua tela acabou.`, false);
+  if (state.ctrl.pending.includes(id)) {
+    const wasFirst = state.ctrl.pending[0] === id;
+    state.ctrl.pending = state.ctrl.pending.filter((x) => x !== id);
+    if (wasFirst) showCtrlPrompt();
+  }
+  if (state.ctrl.controlling === id) endControlling();
+  if (state.ctrl.asking === id) state.ctrl.asking = null;
   if (state.door.owner === id) {
     state.door.owner = null;
     state.door.ownerLostAt = Date.now();
@@ -1464,6 +1518,16 @@ async function switchScreen(sel) {
 
   const audioOn = await applyScreenAudio(sel, cap.loop);
   state.screenSel = { ...sel, audioOn };
+  if (state.ctrl.granted) {
+    // O controle acompanha a troca de monitor; se virou uma janela, acaba.
+    if (sharingWholeScreen()) {
+      const res = await telinha.controlStart(sel.sourceId);
+      if (!res.ok) revokeControl('O controle acabou: ' + res.error, true);
+    } else {
+      revokeControl('O controle acabou porque agora você está compartilhando uma janela.', true);
+    }
+  }
+  if (!sharingWholeScreen()) denyAllPending('Agora a tela compartilhada é uma janela; o controle só funciona com a tela inteira.');
   const t = tiles.get(tileKey('me', 'screen'));
   if (t) {
     t.video.srcObject = null;
@@ -1478,6 +1542,8 @@ async function switchScreen(sel) {
 function stopScreen() {
   const s = state.local.screen;
   if (!s) return;
+  revokeControl('Você parou de compartilhar; o controle acabou.', true);
+  denyAllPending('Parou de compartilhar a tela.');
   state.local.screen = null;
   state.screenSel = null;
   s.getVideoTracks().forEach((t) => t.stop());
@@ -1677,7 +1743,7 @@ function onAnnot(p, d) {
   if (typeof d.to !== 'string' || !d.a || typeof d.a !== 'object') return;
   if (!['ptr', 'stroke', 'mark'].includes(d.a.type)) return;
   if (!annotAllowedFor(d.to)) return;
-  const evt = { ...d.a, from: p.id, name: p.name, color: colorFor(p.name) };
+  const evt = { ...d.a, from: p.id, name: p.name, color: isHex(d.a.color) ? d.a.color : colorFor(p.name) };
   drawAnnot(d.to, evt);
 }
 
@@ -1691,8 +1757,10 @@ function drawAnnot(ownerId, evt) {
 // Eu apontando/desenhando na tela de outra pessoa.
 function sendAnnot(ownerId, a) {
   if (!annotAllowedFor(ownerId)) return;
+  a = { ...a, color: a.type === 'ptr' ? myPtrColor() : myDrawColor() };
+  if (a.type === 'stroke') a.w = state.drawSize;
   broadcast({ t: 'annot', to: ownerId, a });
-  drawAnnot(ownerId, { ...a, from: state.myId, name: 'Você', color: colorFor(state.name) });
+  drawAnnot(ownerId, { ...a, from: state.myId, name: 'Você' });
 }
 
 function setupAnnotInput(t) {
@@ -1749,10 +1817,71 @@ function setupAnnotInput(t) {
 }
 
 function setDrawMode(t, on) {
+  if (on && state.ctrl.controlling === t.peerId) return; // controlando: o mouse vai pro PC do outro
+  const was = t.el.classList.contains('drawing');
   t.el.classList.toggle('drawing', !!on);
   const b = t.el.querySelector('.b-annot');
   if (b) b.classList.toggle('on', !!on);
-  if (on) toast('Mexa o mouse pra apontar, clique pra marcar, arraste pra riscar. Botão direito sai.');
+  if (on) renderDrawTools(t);
+  if (on && !was) toast('Mexa o mouse pra apontar, clique pra marcar, arraste pra riscar. Botão direito sai.');
+}
+
+// Paletinha que aparece no vídeo enquanto o lápis está ativo (cor e espessura do desenho).
+function renderDrawTools(t) {
+  const box = t.el.querySelector('.draw-tools');
+  if (!box) return;
+  box.innerHTML = '';
+  const current = myDrawColor().toLowerCase();
+  for (const c of PALETTE) {
+    const b = document.createElement('button');
+    b.className = 'swatch' + (c.toLowerCase() === current ? ' on' : '');
+    b.style.background = c;
+    b.title = c;
+    b.addEventListener('click', (e) => { e.stopPropagation(); setDrawColor(c); });
+    box.appendChild(b);
+  }
+  const custom = document.createElement('input');
+  custom.type = 'color';
+  custom.className = 'swatch-custom';
+  custom.title = 'Outra cor';
+  custom.value = current;
+  custom.addEventListener('input', () => setDrawColor(custom.value, false));
+  custom.addEventListener('change', () => setDrawColor(custom.value));
+  box.appendChild(custom);
+  const sep = document.createElement('span');
+  sep.className = 'tools-sep';
+  box.appendChild(sep);
+  [1, 2, 3].forEach((w) => {
+    const b = document.createElement('button');
+    b.className = 'size' + (state.drawSize === w ? ' on' : '');
+    b.title = ['Fino', 'Médio', 'Grosso'][w - 1];
+    b.innerHTML = `<i style="width:${w * 4 + 2}px;height:${w * 4 + 2}px"></i>`;
+    b.addEventListener('click', (e) => { e.stopPropagation(); setDrawSize(w); });
+    box.appendChild(b);
+  });
+}
+
+function refreshDrawTools() {
+  for (const t of tiles.values()) if (t.el.classList.contains('drawing')) renderDrawTools(t);
+}
+
+function setDrawColor(c, rerender = true) {
+  if (!isHex(c)) return;
+  state.drawColor = c;
+  savePref('drawColor', c);
+  if (rerender) refreshDrawTools();
+}
+
+function setPtrColor(c) {
+  if (!isHex(c)) return;
+  state.ptrColor = c;
+  savePref('ptrColor', c);
+}
+
+function setDrawSize(w) {
+  state.drawSize = w;
+  savePref('drawSize', String(w));
+  refreshDrawTools();
 }
 
 function toggleAnnotAllow() {
@@ -1766,10 +1895,343 @@ function toggleAnnotAllow() {
   toast(state.annotAllow ? 'Os amigos podem apontar e desenhar na sua tela.' : 'Ninguém mais pode apontar na sua tela.');
 }
 
-function updateOverlay() {
-  const sel = state.screenSel;
-  if (state.local.screen && sel && state.annotAllow && String(sel.sourceId).startsWith('screen:')) telinha.overlayShow(sel.sourceId);
-  else telinha.overlayHide();
+function sharingWholeScreen() {
+  return !!(state.local.screen && state.screenSel && String(state.screenSel.sourceId).startsWith('screen:'));
+}
+
+// A camada por cima da tela aparece se tiver anotação liberada ou algo de controle acontecendo.
+async function updateOverlay() {
+  const need = sharingWholeScreen() && (state.annotAllow || state.ctrl.granted || state.ctrl.pending.length);
+  if (need) {
+    await telinha.overlayShow(state.screenSel.sourceId);
+    updateCtrlBanner();
+  } else {
+    telinha.overlayHide();
+  }
+}
+
+/* ---------------------------------------------------------------- controle remoto */
+
+// Teclas permitidas (KeyboardEvent.code -> [scancode, estendida]). Posicional: funciona com
+// qualquer layout (ABNT2 incluso). A tecla Windows fica de fora de propósito.
+const SCANCODES = (() => {
+  const m = {};
+  const row = (codes, start) => codes.forEach((c, i) => { m[c] = [start + i, 0]; });
+  row(['KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP', 'BracketLeft', 'BracketRight'], 0x10);
+  row(['KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyG', 'KeyH', 'KeyJ', 'KeyK', 'KeyL', 'Semicolon', 'Quote', 'Backquote'], 0x1e);
+  row(['KeyZ', 'KeyX', 'KeyC', 'KeyV', 'KeyB', 'KeyN', 'KeyM', 'Comma', 'Period', 'Slash'], 0x2c);
+  row(['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0', 'Minus', 'Equal', 'Backspace', 'Tab'], 0x02);
+  row(['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10'], 0x3b);
+  Object.assign(m, {
+    Escape: [0x01, 0], Enter: [0x1c, 0], ControlLeft: [0x1d, 0], ShiftLeft: [0x2a, 0], Backslash: [0x2b, 0],
+    ShiftRight: [0x36, 0], NumpadMultiply: [0x37, 0], AltLeft: [0x38, 0], Space: [0x39, 0], CapsLock: [0x3a, 0],
+    NumLock: [0x45, 0], ScrollLock: [0x46, 0], Numpad7: [0x47, 0], Numpad8: [0x48, 0], Numpad9: [0x49, 0],
+    NumpadSubtract: [0x4a, 0], Numpad4: [0x4b, 0], Numpad5: [0x4c, 0], Numpad6: [0x4d, 0], NumpadAdd: [0x4e, 0],
+    Numpad1: [0x4f, 0], Numpad2: [0x50, 0], Numpad3: [0x51, 0], Numpad0: [0x52, 0], NumpadDecimal: [0x53, 0],
+    IntlBackslash: [0x56, 0], F11: [0x57, 0], F12: [0x58, 0], IntlRo: [0x73, 0], NumpadComma: [0x7e, 0],
+    NumpadEnter: [0x1c, 1], ControlRight: [0x1d, 1], NumpadDivide: [0x35, 1], AltRight: [0x38, 1],
+    Home: [0x47, 1], ArrowUp: [0x48, 1], PageUp: [0x49, 1], ArrowLeft: [0x4b, 1], ArrowRight: [0x4d, 1],
+    End: [0x4f, 1], ArrowDown: [0x50, 1], PageDown: [0x51, 1], Insert: [0x52, 1], Delete: [0x53, 1], ContextMenu: [0x5d, 1],
+  });
+  return m;
+})();
+
+// ---- dono da tela ----
+
+function onCtrlRequest(p) {
+  if (!sharingWholeScreen() || !state.ctrlAllow) {
+    send(p, { t: 'ctrl-deny', reason: !state.ctrlAllow ? `${state.name} não está aceitando pedidos de controle.` : 'O controle só funciona quando a pessoa compartilha a tela inteira.' });
+    return;
+  }
+  if (state.ctrl.granted === p.id) { send(p, { t: 'ctrl-grant' }); return; }
+  if (state.ctrl.pending.includes(p.id)) return;
+  state.ctrl.pending.push(p.id);
+  if (state.ctrl.pending.length === 1) showCtrlPrompt();
+}
+
+function showCtrlPrompt() {
+  const modal = $('#ctrlPrompt');
+  while (state.ctrl.pending.length && !state.peers.has(state.ctrl.pending[0])) state.ctrl.pending.shift();
+  const id = state.ctrl.pending[0];
+  if (!id) {
+    modal.classList.add('hidden');
+    telinha.controlPending(false);
+    updateOverlay();
+    return;
+  }
+  const p = state.peers.get(id);
+  $('#ctrlPromptText').textContent = `${p.name} quer controlar o mouse e o teclado da sua tela.`;
+  $('#ctrlPromptWarn').textContent = state.ctrl.granted && state.peers.get(state.ctrl.granted)
+    ? `Se aceitar, ${state.peers.get(state.ctrl.granted).name} para de controlar.`
+    : '';
+  modal.classList.remove('hidden');
+  telinha.controlPending(true);
+  beep('join');
+  updateOverlay();
+}
+
+async function answerCtrl(accept) {
+  const id = state.ctrl.pending.shift();
+  const p = id && state.peers.get(id);
+  if (p) {
+    if (accept && sharingWholeScreen()) {
+      if (state.ctrl.granted && state.ctrl.granted !== id) revokeControl(null, true);
+      const res = await telinha.controlStart(state.screenSel.sourceId);
+      if (res.ok) {
+        state.ctrl.granted = id;
+        send(p, { t: 'ctrl-grant' });
+        addSystem(`${p.name} está controlando sua tela. Ctrl+Alt+X para parar a qualquer momento.`);
+      } else {
+        send(p, { t: 'ctrl-deny', reason: 'Não deu pra liberar o controle: ' + res.error });
+        toast(res.error, 'error');
+      }
+    } else {
+      send(p, { t: 'ctrl-deny', reason: `${state.name} recusou o pedido de controle.` });
+    }
+  }
+  showCtrlPrompt();
+  updateCtrlBanner();
+  updateControls();
+}
+
+// Corta o controle. notify = avisar quem controlava.
+function revokeControl(message, notify = true) {
+  const id = state.ctrl.granted;
+  if (!id) return;
+  state.ctrl.granted = null;
+  telinha.controlStop();
+  const p = state.peers.get(id);
+  if (p && notify) send(p, { t: 'ctrl-revoke' });
+  if (message !== null) addSystem(message || `Você encerrou o controle de ${p ? p.name : 'outra pessoa'}.`);
+  updateCtrlBanner();
+  updateOverlay();
+  updateControls();
+}
+
+function denyAllPending(reason) {
+  const list = state.ctrl.pending;
+  state.ctrl.pending = [];
+  for (const id of list) {
+    const p = state.peers.get(id);
+    if (p) send(p, { t: 'ctrl-deny', reason });
+  }
+  if (list.length) showCtrlPrompt();
+}
+
+function onCtrlInput(p, d) {
+  if (state.ctrl.granted !== p.id) return;
+  switch (d.k) {
+    case 'm':
+      telinha.controlInput({ k: 'm', x: Number(d.x), y: Number(d.y) });
+      break;
+    case 'd':
+    case 'u':
+      if ([0, 1, 2].includes(d.b)) telinha.controlInput({ k: d.k, b: d.b });
+      break;
+    case 'w':
+      telinha.controlInput({ k: 'w', d: Math.sign(Number(d.d) || 0) * 120 });
+      break;
+    case 'kd':
+    case 'ku': {
+      const sc = SCANCODES[d.c];
+      if (sc) telinha.controlInput({ k: d.k, sc: sc[0], ext: sc[1] });
+      break;
+    }
+    case 'reset':
+      telinha.controlInput({ k: 'reset' });
+      break;
+  }
+}
+
+// Aviso na barra do app e por cima da tela (camada fora da transmissão).
+function updateCtrlBanner() {
+  const bar = $('#ctrlBar');
+  let text = '';
+  let tone = '';
+  const pendingP = state.ctrl.pending.length && state.peers.get(state.ctrl.pending[0]);
+  const grantedP = state.ctrl.granted && state.peers.get(state.ctrl.granted);
+  if (pendingP) {
+    text = `🖱 ${pendingP.name} quer controlar sua tela · Ctrl+Alt+Y aceita · Ctrl+Alt+N recusa`;
+    tone = 'warn';
+  } else if (grantedP) {
+    text = `🖱 ${grantedP.name} está controlando sua tela · Ctrl+Alt+X para parar`;
+    tone = 'live';
+  }
+  telinha.overlayEvent({ type: 'banner', text, tone });
+  bar.classList.toggle('hidden', !grantedP);
+  if (grantedP) $('#ctrlBarText').textContent = `${grantedP.name} está controlando sua tela.`;
+}
+
+function toggleCtrlAllow(v) {
+  state.ctrlAllow = v;
+  savePref('ctrlAllow', v ? '1' : '0');
+  if (!v) {
+    revokeControl('Você desligou os pedidos de controle; o controle acabou.', true);
+    denyAllPending(`${state.name} desligou os pedidos de controle.`);
+  }
+  if (state.local.screen) broadcastSharing('screen');
+}
+
+telinha.onControlShortcut((action) => {
+  if (action === 'revoke') revokeControl(null, true);
+  else if (action === 'accept' && state.ctrl.pending.length) answerCtrl(true);
+  else if (action === 'deny' && state.ctrl.pending.length) answerCtrl(false);
+});
+telinha.onControlEnded(() => revokeControl('O controle parou (o programa de controle fechou).', true));
+
+// ---- quem assiste / controla ----
+
+function requestControl(t) {
+  const p = state.peers.get(t.peerId);
+  if (!p) return;
+  if (state.ctrl.controlling === p.id) { stopControlling(); return; }
+  if (state.ctrl.asking) return;
+  const last = state.ctrl.cooldown.get(p.id) || 0;
+  if (Date.now() - last < 15000) {
+    toast('Espere uns segundos antes de pedir de novo.', 'error');
+    return;
+  }
+  state.ctrl.asking = p.id;
+  send(p, { t: 'ctrl-req' });
+  toast(`Pedido enviado. Esperando ${p.name} aceitar…`);
+  updateCtrlButtons();
+  setTimeout(() => {
+    if (state.ctrl.asking === p.id) {
+      state.ctrl.asking = null;
+      updateCtrlButtons();
+      toast(`${p.name} não respondeu ao pedido de controle.`, 'error');
+    }
+  }, 60000);
+}
+
+function startControlling(p) {
+  state.ctrl.asking = null;
+  state.ctrl.controlling = p.id;
+  const t = tiles.get(tileKey(p.id, 'screen'));
+  if (t) {
+    setDrawMode(t, false);
+    t.el.classList.add('controlling');
+    state.focusKey = t.key;
+    updateStageUI();
+    t.el.querySelector('.ctrl-catch').focus();
+  }
+  addSystem(`Você está controlando a tela de ${p.name}. Clique no vídeo e use mouse e teclado; Ctrl+Alt+X ou o botão 🖱 param.`);
+  updateCtrlButtons();
+}
+
+function stopControlling() {
+  const id = state.ctrl.controlling;
+  if (!id) return;
+  const p = state.peers.get(id);
+  if (p) {
+    send(p, { t: 'ci', k: 'reset' });
+    send(p, { t: 'ctrl-release' });
+  }
+  endControlling('Você parou de controlar.');
+}
+
+function endControlling(message) {
+  const id = state.ctrl.controlling;
+  if (!id) return;
+  state.ctrl.controlling = null;
+  const t = tiles.get(tileKey(id, 'screen'));
+  if (t) t.el.classList.remove('controlling');
+  if (message) toast(message);
+  updateCtrlButtons();
+}
+
+function updateCtrlButtons() {
+  for (const t of tiles.values()) {
+    const b = t.el.querySelector('.b-ctrl');
+    if (!b) continue;
+    const p = state.peers.get(t.peerId);
+    const allowed = !!(p && p.sharing.screen && p.sharing.screen.ctrl);
+    b.classList.toggle('hidden', !allowed && state.ctrl.controlling !== t.peerId);
+    b.classList.toggle('on', state.ctrl.controlling === t.peerId);
+    b.classList.toggle('waiting', state.ctrl.asking === t.peerId);
+    b.title = state.ctrl.controlling === t.peerId ? 'Parar de controlar'
+      : state.ctrl.asking === t.peerId ? 'Esperando a pessoa aceitar…'
+      : 'Pedir pra controlar essa tela (mouse e teclado)';
+  }
+}
+
+// Captura mouse e teclado sobre o vídeo e manda pra quem está compartilhando.
+function setupCtrlInput(t) {
+  const catcher = t.el.querySelector('.ctrl-catch');
+  const held = new Set();
+  const buttons = new Set();
+  let lastMove = 0;
+  const target = () => (state.ctrl.controlling === t.peerId ? state.peers.get(t.peerId) : null);
+  const norm = (e) => {
+    const rect = t.video.getBoundingClientRect();
+    const cr = contentRect(t.video);
+    const x = (e.clientX - rect.left - cr.x) / cr.w;
+    const y = (e.clientY - rect.top - cr.y) / cr.h;
+    return [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))];
+  };
+  const releaseAll = () => {
+    const p = target();
+    if (p && (held.size || buttons.size)) send(p, { t: 'ci', k: 'reset' });
+    held.clear();
+    buttons.clear();
+  };
+  catcher.addEventListener('pointermove', (e) => {
+    const p = target();
+    if (!p) return;
+    const now = performance.now();
+    if (now - lastMove < 16) return;
+    lastMove = now;
+    const [x, y] = norm(e);
+    send(p, { t: 'ci', k: 'm', x: Math.round(x * 100000) / 100000, y: Math.round(y * 100000) / 100000 });
+  });
+  catcher.addEventListener('pointerdown', (e) => {
+    const p = target();
+    if (!p || e.button > 2) return;
+    e.preventDefault();
+    catcher.focus();
+    catcher.setPointerCapture(e.pointerId);
+    const [x, y] = norm(e);
+    send(p, { t: 'ci', k: 'm', x, y });
+    send(p, { t: 'ci', k: 'd', b: e.button });
+    buttons.add(e.button);
+  });
+  catcher.addEventListener('pointerup', (e) => {
+    const p = target();
+    if (!p || e.button > 2) return;
+    send(p, { t: 'ci', k: 'u', b: e.button });
+    buttons.delete(e.button);
+  });
+  catcher.addEventListener('wheel', (e) => {
+    const p = target();
+    if (!p) return;
+    e.preventDefault();
+    if (e.deltaY) send(p, { t: 'ci', k: 'w', d: e.deltaY < 0 ? 120 : -120 });
+  }, { passive: false });
+  catcher.addEventListener('contextmenu', (e) => e.preventDefault());
+  catcher.addEventListener('keydown', (e) => {
+    const p = target();
+    if (!p) return;
+    if (e.ctrlKey && e.altKey && e.code === 'KeyX') {
+      e.preventDefault();
+      releaseAll();
+      stopControlling();
+      return;
+    }
+    e.preventDefault();
+    if (!SCANCODES[e.code]) return;
+    held.add(e.code);
+    send(p, { t: 'ci', k: 'kd', c: e.code });
+  });
+  catcher.addEventListener('keyup', (e) => {
+    const p = target();
+    if (!p) return;
+    e.preventDefault();
+    if (!SCANCODES[e.code]) return;
+    held.delete(e.code);
+    send(p, { t: 'ci', k: 'ku', c: e.code });
+  });
+  // Saiu da janela/vídeo com tecla ou botão apertado: solta tudo do outro lado.
+  catcher.addEventListener('blur', releaseAll);
 }
 
 /* ---------------------------------------------------------------- câmera */
@@ -1862,7 +2324,8 @@ const ICON_VOL = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="cu
 const ICON_PIP = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 11h-8v6h8v-6zm4 8V5a2 2 0 0 0-2-2H3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2zm-2 0H3V5h18v14z"/></svg>';
 const ICON_EYE = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.7 7.6 1 12c1.7 4.4 6 7.5 11 7.5s9.3-3.1 11-7.5c-1.7-4.4-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>';
 const ICON_PEN = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
-const ICON_HIDE = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
+const ICON_MOUSE = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M13 1.07V9h7c0-4.08-3.05-7.44-7-7.93zM4 15c0 4.42 3.58 8 8 8s8-3.58 8-8v-4H4v4zm7-13.93C7.05 1.56 4 4.92 4 9h7V1.07z"/></svg>';
+const ICON_HIDE ='<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
 
 function addTile({ key, kind, local, stream, peerId }) {
   let t = tiles.get(key);
@@ -1874,12 +2337,13 @@ function addTile({ key, kind, local, stream, peerId }) {
     el.innerHTML = `
       <video autoplay playsinline></video>
       ${isScreen ? '<canvas class="annot"></canvas>' : ''}
-      ${isScreen && !local ? '<div class="annot-catch"></div>' : ''}
+      ${isScreen && !local ? '<div class="annot-catch"></div><div class="ctrl-catch" tabindex="0"></div><div class="draw-tools"></div>' : ''}
       <div class="tile-label"><span class="live"></span><span class="lbl"></span><span class="stats"></span></div>
       <div class="tile-bar">
         <span class="vol hidden" title="Volume">${ICON_VOL}<input type="range" min="0" max="1" step="0.01"></span>
         <span></span>
         <span class="tile-actions">
+          ${isScreen && !local ? `<button class="icon-btn b-ctrl hidden" title="Pedir pra controlar essa tela">${ICON_MOUSE}</button>` : ''}
           ${isScreen && !local ? `<button class="icon-btn b-annot hidden" title="Apontar/desenhar na tela">${ICON_PEN}</button>` : ''}
           ${local && isScreen ? `<button class="icon-btn b-preview" title="Ocultar/mostrar minha prévia">${ICON_EYE}</button>` : ''}
           ${pipOk ? `<button class="icon-btn b-pip" title="Janela flutuante (por cima de tudo)">${ICON_PIP}</button>` : ''}
@@ -1908,6 +2372,9 @@ function addTile({ key, kind, local, stream, peerId }) {
     if (hide) hide.addEventListener('click', () => hideRemote(peerId, kind));
     const annotBtn = el.querySelector('.b-annot');
     if (annotBtn) annotBtn.addEventListener('click', () => setDrawMode(t, !el.classList.contains('drawing')));
+    const ctrlBtn = el.querySelector('.b-ctrl');
+    if (ctrlBtn) ctrlBtn.addEventListener('click', () => requestControl(t));
+    if (el.querySelector('.ctrl-catch')) setupCtrlInput(t);
     video.addEventListener('dblclick', () => toggleFullscreen(el));
     const canvas = el.querySelector('canvas.annot');
     if (canvas) t.layer = new AnnotLayer(canvas, () => contentRect(video));
@@ -1942,6 +2409,7 @@ function updateRemoteTileExtras(t, p) {
     setDrawMode(t, false);
     if (t.layer) t.layer.clear();
   }
+  updateCtrlButtons();
 }
 
 // Prévia da minha própria tela: dá pra esconder pra economizar PC.
@@ -2002,6 +2470,7 @@ setInterval(() => {
 function removeTile(key) {
   const t = tiles.get(key);
   if (!t) return;
+  if (t.kind === 'screen' && t.peerId && state.ctrl.controlling === t.peerId) stopControlling();
   if (document.fullscreenElement === t.el) document.exitFullscreen().catch(() => {});
   if (document.pictureInPictureElement === t.video) document.exitPictureInPicture().catch(() => {});
   t.video.srcObject = null;
@@ -2116,6 +2585,8 @@ function leaveRoom(reason) {
   if (state.leaving) return;
   state.leaving = true;
   state.inRoom = false;
+  stopControlling();
+  state.ctrl.asking = null;
   releaseDoor(); // outra pessoa assume a porta
   broadcast({ t: 'bye' });
   stopScreen();
@@ -2360,7 +2831,62 @@ function renderSettings() {
   prefs.appendChild(switchRow('Deixar os amigos apontarem na minha tela', 'Ponteiro, marcações e riscos em cima da tela que você compartilha.', state.annotAllow, (v) => {
     if (v !== state.annotAllow) toggleAnnotAllow();
   }));
+  prefs.appendChild(switchRow('Permitir pedidos de controle da minha tela', 'Os amigos podem pedir pra usar seu mouse e teclado. Você sempre precisa aceitar, e Ctrl+Alt+X corta na hora.', state.ctrlAllow, toggleCtrlAllow));
   body.appendChild(prefs);
+
+  // Cores do ponteiro e do desenho
+  const colors = settingsSection('Ponteiro e desenho');
+  const colorRow = (label, current, onPick) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'color-row';
+    const l = document.createElement('span');
+    l.textContent = label;
+    const sw = document.createElement('div');
+    sw.className = 'swatches';
+    const render = (cur) => {
+      sw.innerHTML = '';
+      for (const c of PALETTE) {
+        const b = document.createElement('button');
+        b.className = 'swatch' + (c.toLowerCase() === cur.toLowerCase() ? ' on' : '');
+        b.style.background = c;
+        b.title = c;
+        b.addEventListener('click', () => { onPick(c); render(c); });
+        sw.appendChild(b);
+      }
+      const custom = document.createElement('input');
+      custom.type = 'color';
+      custom.className = 'swatch-custom';
+      custom.title = 'Outra cor';
+      custom.value = cur;
+      custom.addEventListener('change', () => { onPick(custom.value); render(custom.value); });
+      sw.appendChild(custom);
+    };
+    render(current);
+    wrap.append(l, sw);
+    return wrap;
+  };
+  colors.appendChild(colorRow('Cor do seu ponteiro', myPtrColor(), setPtrColor));
+  colors.appendChild(colorRow('Cor do seu desenho', myDrawColor(), (c) => setDrawColor(c)));
+  const sizeRow = document.createElement('div');
+  sizeRow.className = 'color-row';
+  const sl = document.createElement('span');
+  sl.textContent = 'Espessura do desenho';
+  const sizes = document.createElement('div');
+  sizes.className = 'swatches';
+  const renderSizes = () => {
+    sizes.innerHTML = '';
+    ['Fino', 'Médio', 'Grosso'].forEach((name, i) => {
+      const b = document.createElement('button');
+      b.className = 'btn small' + (state.drawSize === i + 1 ? ' primary' : '');
+      b.textContent = name;
+      b.addEventListener('click', () => { setDrawSize(i + 1); renderSizes(); });
+      sizes.appendChild(b);
+    });
+  };
+  renderSizes();
+  sizeRow.append(sl, sizes);
+  colors.appendChild(sizeRow);
+  body.appendChild(colors);
 
   // Regras da sala
   const rules = settingsSection(state.amHost ? 'Sala (você é o host)' : 'Regras da sala');
@@ -2700,6 +3226,9 @@ async function init() {
   $('#settingsClose').addEventListener('click', closeSettings);
   $('#settings').addEventListener('mousedown', (e) => { if (e.target.id === 'settings') closeSettings(); });
   $('#leaveBtn').addEventListener('click', () => leaveRoom());
+  $('#ctrlAccept').addEventListener('click', () => answerCtrl(true));
+  $('#ctrlDeny').addEventListener('click', () => answerCtrl(false));
+  $('#ctrlBarStop').addEventListener('click', () => revokeControl(null, true));
 
   const bar = $('#reactBar');
   for (const emoji of REACTIONS) {

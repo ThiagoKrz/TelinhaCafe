@@ -4,6 +4,7 @@ node_modules/
 # Builds (os instaladores vão nos Releases do GitHub, não no código)
 dist/
 native/AudioCap.exe
+native/InputCtl.exe
 *.blockmap
 
 # Logs e lixo do sistema

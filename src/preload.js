@@ -12,6 +12,18 @@ contextBridge.exposeInMainWorld('telinha', {
   overlayShow: (sourceId) => ipcRenderer.invoke('overlay-show', sourceId),
   overlayHide: () => ipcRenderer.invoke('overlay-hide'),
   overlayEvent: (evt) => ipcRenderer.send('overlay-event', evt),
+  controlStart: (sourceId) => ipcRenderer.invoke('control-start', sourceId),
+  controlInput: (ev) => ipcRenderer.send('control-input', ev),
+  controlStop: () => ipcRenderer.invoke('control-stop'),
+  controlPending: (on) => ipcRenderer.invoke('control-pending', !!on),
+  onControlShortcut: (cb) => {
+    ipcRenderer.removeAllListeners('control-shortcut');
+    ipcRenderer.on('control-shortcut', (_e, action) => cb(action));
+  },
+  onControlEnded: (cb) => {
+    ipcRenderer.removeAllListeners('control-ended');
+    ipcRenderer.on('control-ended', () => cb());
+  },
   onAudioData: (cb) => {
     ipcRenderer.removeAllListeners('audio-data');
     ipcRenderer.on('audio-data', (_e, data) => cb(data));

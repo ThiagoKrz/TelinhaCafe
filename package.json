@@ -1,7 +1,7 @@
 {
   "name": "telinha",
   "productName": "Telinha",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Compartilhamento de tela e cÃ¢mera P2P para grupos de amigos",
   "main": "src/main.js",
   "author": "Thiago Krauzer",
@@ -41,6 +41,10 @@
       {
         "from": "native/AudioCap.exe",
         "to": "AudioCap.exe"
+      },
+      {
+        "from": "native/InputCtl.exe",
+        "to": "InputCtl.exe"
       }
     ],
     "win": {

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, clipboard, shell, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, clipboard, shell, screen, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
@@ -13,11 +13,12 @@ let overlayWin = null;       // camada transparente com os ponteiros dos amigos,
 let pendingShare = null;     // { id, audio } escolhido no seletor, usado pelo getDisplayMedia
 let audioProc = null;
 
-function helperPath() {
+function nativePath(name) {
   return app.isPackaged
-    ? path.join(process.resourcesPath, 'AudioCap.exe')
-    : path.join(__dirname, '..', 'native', 'AudioCap.exe');
+    ? path.join(process.resourcesPath, name)
+    : path.join(__dirname, '..', 'native', name);
 }
+const helperPath = () => nativePath('AudioCap.exe');
 
 function createWindow() {
   win = new BrowserWindow({
@@ -51,6 +52,7 @@ function createWindow() {
   win.on('closed', () => {
     win = null;
     stopAudio();
+    stopControl();
     hideOverlay();
   });
 }
@@ -78,8 +80,11 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopAudio();
+  stopControl();
   app.quit();
 });
+
+app.on('will-quit', () => globalShortcut.unregisterAll());
 
 function sendToRenderer(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -96,9 +101,12 @@ ipcMain.handle('get-sources', async () => {
     thumbnailSize: { width: 320, height: 180 },
     fetchWindowIcons: true,
   });
-  const hidden = new Set([win, overlayWin].filter((w) => w && !w.isDestroyed()).map((w) => w.getMediaSourceId()));
+  // Esconde as janelas do próprio app (principal e camada de ponteiros). Compara só o HWND:
+  // o sufixo do ID pode variar entre getMediaSourceId() e o desktopCapturer.
+  const hwndOf = (id) => String(id).split(':')[1];
+  const hidden = new Set([win, overlayWin].filter((w) => w && !w.isDestroyed()).map((w) => hwndOf(w.getMediaSourceId())));
   return sources
-    .filter((s) => !hidden.has(s.id))
+    .filter((s) => !(s.id.startsWith('window:') && (hidden.has(hwndOf(s.id)) || s.name === 'Telinha · ponteiros')))
     .map((s) => ({
       id: s.id,
       name: s.name,
@@ -236,17 +244,26 @@ ipcMain.handle('audio-stop', () => {
 function hideOverlay() {
   if (overlayWin && !overlayWin.isDestroyed()) overlayWin.destroy();
   overlayWin = null;
+  overlaySource = null;
 }
 
-// Mostra a camada por cima do monitor que está sendo compartilhado.
-ipcMain.handle('overlay-show', async (_e, sourceId) => {
-  hideOverlay();
-  if (!String(sourceId).startsWith('screen:')) return false;
+// Monitor correspondente a uma fonte "screen:..." do desktopCapturer.
+async function displayFor(sourceId) {
+  if (!String(sourceId).startsWith('screen:')) return null;
   const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
   const src = sources.find((s) => s.id === sourceId);
   const displays = screen.getAllDisplays();
-  const display = (src && displays.find((d) => String(d.id) === String(src.display_id))) || (displays.length === 1 ? displays[0] : null);
+  return (src && displays.find((d) => String(d.id) === String(src.display_id))) || (displays.length === 1 ? displays[0] : null);
+}
+
+// Mostra a camada por cima do monitor que está sendo compartilhado.
+let overlaySource = null;
+ipcMain.handle('overlay-show', async (_e, sourceId) => {
+  if (overlayWin && !overlayWin.isDestroyed() && overlaySource === sourceId) return true;
+  hideOverlay();
+  const display = await displayFor(sourceId);
   if (!display) return false;
+  overlaySource = sourceId;
 
   const { x, y, width, height } = display.bounds;
   overlayWin = new BrowserWindow({
@@ -287,4 +304,95 @@ ipcMain.handle('overlay-hide', () => {
 
 ipcMain.on('overlay-event', (_e, evt) => {
   if (overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send('annot', evt);
+});
+
+/* ------------------------------------------------------------ controle remoto (consentido) */
+
+// Quem compartilha aceita o pedido; aí os movimentos de quem controla chegam aqui (normalizados 0..1
+// sobre o monitor compartilhado) e o InputCtl.exe os aplica no Windows.
+let control = null; // { proc, rect: {x,y,width,height} em pixels físicos }
+const fakeInput = !!process.env.TELINHA_FAKE_INPUT; // testes: registra em vez de mexer no mouse de verdade
+global.__inputLog = [];
+
+function controlWrite(line) {
+  if (!control) return;
+  if (fakeInput) { global.__inputLog.push(line); return; }
+  try { control.proc.stdin.write(line + '\n'); } catch {}
+}
+
+function stopControl() {
+  globalShortcut.unregister('Control+Alt+X');
+  if (!control) return;
+  controlWrite('reset');
+  if (control.proc) {
+    try { control.proc.stdin.end(); } catch {}
+    const p = control.proc;
+    setTimeout(() => { try { p.kill(); } catch {} }, 500);
+  }
+  control = null;
+}
+
+ipcMain.handle('control-start', async (_e, sourceId) => {
+  stopControl();
+  const display = await displayFor(sourceId);
+  if (!display) return { ok: false, error: 'O controle só funciona compartilhando a tela inteira.' };
+  const rect = screen.dipToScreenRect(null, display.bounds);
+  let proc = null;
+  if (!fakeInput) {
+    const exe = nativePath('InputCtl.exe');
+    if (!fs.existsSync(exe)) return { ok: false, error: 'InputCtl.exe não encontrado' };
+    proc = spawn(exe, [], { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
+    proc.on('exit', () => { if (control && control.proc === proc) { control = null; sendToRenderer('control-ended', {}); } });
+  }
+  control = { proc, rect };
+  // Atalho de emergência: corta o controle de qualquer lugar (inclusive dentro do jogo).
+  globalShortcut.register('Control+Alt+X', () => sendToRenderer('control-shortcut', 'revoke'));
+  return { ok: true };
+});
+
+// Chega em alta frequência: fire-and-forget.
+ipcMain.on('control-input', (_e, ev) => {
+  if (!control || !ev) return;
+  const r = control.rect;
+  switch (ev.k) {
+    case 'm': {
+      const x = Number(ev.x), y = Number(ev.y);
+      if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return;
+      controlWrite(`m ${Math.round(r.x + x * (r.width - 1))} ${Math.round(r.y + y * (r.height - 1))}`);
+      break;
+    }
+    case 'd':
+    case 'u':
+      if ([0, 1, 2].includes(ev.b)) controlWrite(`${ev.k} ${ev.b}`);
+      break;
+    case 'w':
+      if (Number.isFinite(ev.d)) controlWrite(`w ${Math.max(-1200, Math.min(1200, Math.round(ev.d)))}`);
+      break;
+    case 'kd':
+    case 'ku':
+      if (Number.isInteger(ev.sc) && ev.sc > 0 && ev.sc < 0x80) controlWrite(`${ev.k} ${ev.sc} ${ev.ext ? 1 : 0}`);
+      break;
+    case 'reset':
+      controlWrite('reset');
+      break;
+  }
+});
+
+ipcMain.handle('control-stop', () => {
+  stopControl();
+  return true;
+});
+
+// Pedido de controle pendente: atalhos pra aceitar/recusar sem sair do jogo, e a barra de tarefas pisca.
+ipcMain.handle('control-pending', (_e, on) => {
+  globalShortcut.unregister('Control+Alt+Y');
+  globalShortcut.unregister('Control+Alt+N');
+  if (on) {
+    globalShortcut.register('Control+Alt+Y', () => sendToRenderer('control-shortcut', 'accept'));
+    globalShortcut.register('Control+Alt+N', () => sendToRenderer('control-shortcut', 'deny'));
+    if (win && !win.isDestroyed() && !win.isFocused()) win.flashFrame(true);
+  } else if (win && !win.isDestroyed()) {
+    win.flashFrame(false);
+  }
+  return true;
 });

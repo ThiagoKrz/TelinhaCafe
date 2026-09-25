@@ -6,9 +6,9 @@ Compartilhamento de tela e câmera entre amigos (até 6 pessoas), direto P2P via
 Última versão em **[Releases](https://github.com/ThiagoKrz/TelinhaCafe/releases/latest)**.
 
 ## Instalar
-- **`Telinha-Setup-1.0.0.exe`** (recomendado): instala só pro seu usuário (não pede administrador),
+- **`Telinha-Setup-1.1.0.exe`** (recomendado): instala só pro seu usuário (não pede administrador),
   cria atalho na área de trabalho e no menu Iniciar. Pra atualizar, é só rodar o instalador da versão nova por cima.
-- **`Telinha-1.0.0-portatil.exe`**: roda sem instalar (demora uns segundos a mais pra abrir).
+- **`Telinha-1.1.0-portatil.exe`**: roda sem instalar (demora uns segundos a mais pra abrir).
 - Na 1ª vez o Windows pode mostrar "O Windows protegeu o computador" → **Mais informações → Executar assim mesmo**
   (o app não é assinado).
 - **Todo mundo da sala precisa da mesma versão.** Se não for, o app avisa quem precisa atualizar.
@@ -34,6 +34,20 @@ As duas primeiras precisam de Windows 11 ou Windows 10 atualizado; se não der, 
 - Compartilhando a **tela inteira**, os ponteiros aparecem **por cima da sua tela de verdade** (camada transparente
   que não aparece na transmissão e deixa os cliques passarem). Não aparece por cima de jogos em
   "tela cheia exclusiva"; em "janela sem borda" funciona.
+
+- **Cores**: cada um escolhe a cor do ponteiro e a do desenho (paleta ou qualquer cor) e a espessura
+  (fino/médio/grosso), na paletinha que aparece no vídeo com o lápis ativo ou em ⚙ Configurações.
+
+### Controle remoto
+- Quem assiste clica no 🖱 do vídeo pra **pedir controle** do mouse e do teclado.
+- Quem compartilha precisa **aceitar**: pela janela do app ou, de dentro do jogo, **Ctrl+Alt+Y** (aceita) /
+  **Ctrl+Alt+N** (recusa). O pedido também aparece por cima da tela.
+- Enquanto alguém controla, um aviso fica por cima da tela. **Ctrl+Alt+X corta na hora**, de qualquer lugar,
+  assim como o botão "Parar controle". Quem controla também solta pelo 🖱 ou Ctrl+Alt+X.
+- Uma pessoa por vez; acaba sozinho se parar de compartilhar, trocar pra uma janela ou a pessoa sair.
+  A tecla Windows é bloqueada.
+- Só funciona compartilhando a **tela inteira**. Programas rodando como administrador não aceitam o controle
+  (proteção do Windows). Dá pra desligar os pedidos em ⚙ Configurações.
 
 ### Host e moderação
 - Quem cria a sala é o **host** (a chave fica salva no PC dele). Ele pode sair e voltar pelo botão
@@ -72,5 +86,6 @@ que já vem no Windows).
 - `src/renderer/app.js`: salas, WebRTC em malha, UI
 - `src/renderer/annot.js` + `overlay.html`: desenho de ponteiros/riscos
 - `native/AudioCap.cs`: captura WASAPI "process loopback" (sem Discord / só um app / só uma janela)
+- `native/InputCtl.cs`: aplica mouse/teclado do controle remoto (SendInput)
 - Ao mudar o protocolo, suba `PROTO` em `app.js`, mas mantenha o formato da porta (`telinha-sala-CODIGO`) e as
   respostas `welcome`/`reject`, pra versões diferentes conseguirem pelo menos avisar "atualize".
