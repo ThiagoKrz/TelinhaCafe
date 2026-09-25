@@ -15,6 +15,9 @@
    ========================================================================= */
 
 const PeerCtor = window.Peer || (window.peerjs && window.peerjs.Peer);
+// No APK do Android a ponte (mobile-shim.js) se identifica; lá não dá pra compartilhar a tela ainda
+// nem ser controlado, mas dá pra assistir, usar a câmera e controlar o PC dos outros.
+const IS_MOBILE = !!(window.telinha && window.telinha.platform === 'android');
 
 const DOOR_PREFIX = 'telinha-sala-';
 const PROTO = 3;
@@ -2150,9 +2153,58 @@ function updateCtrlButtons() {
     b.classList.toggle('hidden', !allowed && state.ctrl.controlling !== t.peerId);
     b.classList.toggle('on', state.ctrl.controlling === t.peerId);
     b.classList.toggle('waiting', state.ctrl.asking === t.peerId);
+    const kbd = t.el.querySelector('.b-kbd');
+    if (kbd) kbd.classList.toggle('hidden', state.ctrl.controlling !== t.peerId);
     b.title = state.ctrl.controlling === t.peerId ? 'Parar de controlar'
       : state.ctrl.asking === t.peerId ? 'Esperando a pessoa aceitar…'
       : 'Pedir pra controlar essa tela (mouse e teclado)';
+  }
+}
+
+// Texto digitado no teclado do celular -> teclas no PC. Os códigos são posicionais, então a
+// tabela segue o layout ABNT2 (o mais comum no Brasil); acentos viram tecla morta + letra.
+const ABNT2_CHARS = (() => {
+  const m = {};
+  for (let c = 97; c <= 122; c++) {
+    const ch = String.fromCharCode(c);
+    m[ch] = [['Key' + ch.toUpperCase(), false]];
+    m[ch.toUpperCase()] = [['Key' + ch.toUpperCase(), true]];
+  }
+  for (let d = 0; d <= 9; d++) m[String(d)] = [['Digit' + d, false]];
+  const put = (ch, code, shift = false) => { m[ch] = [[code, shift]]; };
+  put(' ', 'Space'); put('\n', 'Enter');
+  put('!', 'Digit1', true); put('@', 'Digit2', true); put('#', 'Digit3', true); put('$', 'Digit4', true);
+  put('%', 'Digit5', true); put('&', 'Digit7', true); put('*', 'Digit8', true); put('(', 'Digit9', true); put(')', 'Digit0', true);
+  put('-', 'Minus'); put('_', 'Minus', true); put('=', 'Equal'); put('+', 'Equal', true);
+  put(',', 'Comma'); put('<', 'Comma', true); put('.', 'Period'); put('>', 'Period', true);
+  put(';', 'Slash'); put(':', 'Slash', true); put('/', 'IntlRo'); put('?', 'IntlRo', true);
+  put("'", 'Backquote'); put('"', 'Backquote', true);
+  put('ç', 'Semicolon'); put('Ç', 'Semicolon', true);
+  put('[', 'BracketRight'); put('{', 'BracketRight', true); put(']', 'Backslash'); put('}', 'Backslash', true);
+  put('\\', 'IntlBackslash'); put('|', 'IntlBackslash', true);
+  return m;
+})();
+// Tecla morta de cada acento no ABNT2: ´ ` ~ ^ ¨
+const ABNT2_DEAD = { '́': ['BracketLeft', false], '̀': ['BracketLeft', true], '̃': ['Quote', false], '̂': ['Quote', true], '̈': ['Digit6', true] };
+
+function charToKeys(ch) {
+  if (ABNT2_CHARS[ch]) return ABNT2_CHARS[ch];
+  const [base, mark] = ch.normalize('NFD');
+  if (mark && ABNT2_DEAD[mark] && ABNT2_CHARS[base]) return [ABNT2_DEAD[mark], ...ABNT2_CHARS[base]];
+  return null;
+}
+
+function tapKey(p, code, shift = false) {
+  if (shift) send(p, { t: 'ci', k: 'kd', c: 'ShiftLeft' });
+  send(p, { t: 'ci', k: 'kd', c: code });
+  send(p, { t: 'ci', k: 'ku', c: code });
+  if (shift) send(p, { t: 'ci', k: 'ku', c: 'ShiftLeft' });
+}
+
+function typeText(p, text) {
+  for (const ch of text.slice(0, 200)) {
+    const keys = charToKeys(ch);
+    if (keys) for (const [code, shift] of keys) tapKey(p, code, shift);
   }
 }
 
@@ -2176,32 +2228,152 @@ function setupCtrlInput(t) {
     held.clear();
     buttons.clear();
   };
+  const round = (v) => Math.round(v * 100000) / 100000;
+  const sendMove = (p, e, force) => {
+    const now = performance.now();
+    if (!force && now - lastMove < 16) return;
+    lastMove = now;
+    const [x, y] = norm(e);
+    send(p, { t: 'ci', k: 'm', x: round(x), y: round(y) });
+  };
+  const click = (p, b) => {
+    send(p, { t: 'ci', k: 'd', b });
+    send(p, { t: 'ci', k: 'u', b });
+  };
+
+  // ---- toque (celular): tocar = clique, segurar = botão direito, arrastar = arrastar,
+  //      dois dedos = rolar ----
+  const touches = new Map();
+  let touch = null;        // { id, sx, sy, dragging, long, timer }
+  let scrollY = null;
+  const avgY = () => [...touches.values()].reduce((a, v) => a + v.y, 0) / touches.size;
+  const endTouch = (p) => {
+    if (!touch) return;
+    clearTimeout(touch.timer);
+    if (touch.dragging) { send(p, { t: 'ci', k: 'u', b: 0 }); buttons.delete(0); }
+    touch = null;
+  };
+  const touchDown = (e, p) => {
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    catcher.setPointerCapture(e.pointerId);
+    if (touches.size >= 2) {
+      endTouch(p);
+      scrollY = avgY();
+      return;
+    }
+    sendMove(p, e, true);
+    touch = { id: e.pointerId, sx: e.clientX, sy: e.clientY, dragging: false, long: false };
+    touch.timer = setTimeout(() => {
+      if (touch && !touch.dragging) {
+        touch.long = true;
+        click(p, 2);
+        if (navigator.vibrate) navigator.vibrate(25);
+      }
+    }, 550);
+  };
+  const touchMove = (e, p) => {
+    if (!touches.has(e.pointerId)) return;
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size >= 2) {
+      const y = avgY();
+      if (scrollY !== null && Math.abs(y - scrollY) > 28) {
+        send(p, { t: 'ci', k: 'w', d: y > scrollY ? 120 : -120 });
+        scrollY = y;
+      }
+      return;
+    }
+    if (!touch || touch.id !== e.pointerId || touch.long) return;
+    if (!touch.dragging && Math.hypot(e.clientX - touch.sx, e.clientY - touch.sy) > 12) {
+      touch.dragging = true;
+      clearTimeout(touch.timer);
+      send(p, { t: 'ci', k: 'd', b: 0 });
+      buttons.add(0);
+    }
+    if (touch.dragging) sendMove(p, e);
+  };
+  const touchUp = (e, p) => {
+    touches.delete(e.pointerId);
+    if (touches.size < 2) scrollY = null;
+    if (!touch || touch.id !== e.pointerId) return;
+    clearTimeout(touch.timer);
+    if (touch.dragging) {
+      sendMove(p, e, true);
+      send(p, { t: 'ci', k: 'u', b: 0 });
+      buttons.delete(0);
+    } else if (!touch.long) {
+      click(p, 0);
+    }
+    touch = null;
+  };
+
   catcher.addEventListener('pointermove', (e) => {
     const p = target();
     if (!p) return;
-    const now = performance.now();
-    if (now - lastMove < 16) return;
-    lastMove = now;
-    const [x, y] = norm(e);
-    send(p, { t: 'ci', k: 'm', x: Math.round(x * 100000) / 100000, y: Math.round(y * 100000) / 100000 });
+    if (e.pointerType === 'touch') touchMove(e, p);
+    else sendMove(p, e);
   });
   catcher.addEventListener('pointerdown', (e) => {
     const p = target();
     if (!p || e.button > 2) return;
     e.preventDefault();
+    if (e.pointerType === 'touch') { touchDown(e, p); return; }
     catcher.focus();
     catcher.setPointerCapture(e.pointerId);
-    const [x, y] = norm(e);
-    send(p, { t: 'ci', k: 'm', x, y });
+    sendMove(p, e, true);
     send(p, { t: 'ci', k: 'd', b: e.button });
     buttons.add(e.button);
   });
   catcher.addEventListener('pointerup', (e) => {
     const p = target();
     if (!p || e.button > 2) return;
+    if (e.pointerType === 'touch') { touchUp(e, p); return; }
     send(p, { t: 'ci', k: 'u', b: e.button });
     buttons.delete(e.button);
   });
+  catcher.addEventListener('pointercancel', (e) => {
+    const p = target();
+    touches.delete(e.pointerId);
+    if (p) endTouch(p);
+  });
+
+  // ---- teclado do celular: digita no PC ----
+  const kbd = t.el.querySelector('.ctrl-kbd');
+  if (kbd) {
+    const SENTINEL = ' '; // um espaço fixo no campo pra perceber o "apagar" do teclado virtual
+    const resetKbd = () => { kbd.value = SENTINEL; };
+    resetKbd();
+    kbd.addEventListener('keydown', (e) => {
+      const p = target();
+      if (!p) return;
+      // Teclado físico (ou o do PC no emulador): manda a tecla direto.
+      if (e.keyCode !== 229 && SCANCODES[e.code]) {
+        e.preventDefault();
+        held.add(e.code);
+        send(p, { t: 'ci', k: 'kd', c: e.code });
+        return;
+      }
+      if (e.key === 'Enter') { e.preventDefault(); tapKey(p, 'Enter'); }
+    });
+    kbd.addEventListener('keyup', (e) => {
+      const p = target();
+      if (!p || e.keyCode === 229 || !SCANCODES[e.code] || !held.has(e.code)) return;
+      e.preventDefault();
+      held.delete(e.code);
+      send(p, { t: 'ci', k: 'ku', c: e.code });
+    });
+    kbd.addEventListener('input', () => {
+      const p = target();
+      const v = kbd.value;
+      if (p) {
+        if (v.length < SENTINEL.length) tapKey(p, 'Backspace');
+        else typeText(p, v.slice(SENTINEL.length));
+      }
+      resetKbd();
+    });
+    kbd.addEventListener('blur', resetKbd);
+    const kbdBtn = t.el.querySelector('.b-kbd');
+    if (kbdBtn) kbdBtn.addEventListener('click', () => { kbd.focus(); kbd.setSelectionRange(1, 1); });
+  }
   catcher.addEventListener('wheel', (e) => {
     const p = target();
     if (!p) return;
@@ -2326,7 +2498,8 @@ const ICON_PIP = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="cu
 const ICON_EYE = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.7 7.6 1 12c1.7 4.4 6 7.5 11 7.5s9.3-3.1 11-7.5c-1.7-4.4-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>';
 const ICON_PEN = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
 const ICON_MOUSE = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M13 1.07V9h7c0-4.08-3.05-7.44-7-7.93zM4 15c0 4.42 3.58 8 8 8s8-3.58 8-8v-4H4v4zm7-13.93C7.05 1.56 4 4.92 4 9h7V1.07z"/></svg>';
-const ICON_HIDE ='<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
+const ICON_KBD = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>';
+const ICON_HIDE = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
 
 function addTile({ key, kind, local, stream, peerId }) {
   let t = tiles.get(key);
@@ -2339,11 +2512,13 @@ function addTile({ key, kind, local, stream, peerId }) {
       <video autoplay playsinline></video>
       ${isScreen ? '<canvas class="annot"></canvas>' : ''}
       ${isScreen && !local ? '<div class="annot-catch"></div><div class="ctrl-catch" tabindex="0"></div><div class="draw-tools"></div>' : ''}
+      ${isScreen && !local && IS_MOBILE ? '<input class="ctrl-kbd" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="Teclado do controle">' : ''}
       <div class="tile-label"><span class="live"></span><span class="lbl"></span><span class="stats"></span></div>
       <div class="tile-bar">
         <span class="vol hidden" title="Volume">${ICON_VOL}<input type="range" min="0" max="1" step="0.01"></span>
         <span></span>
         <span class="tile-actions">
+          ${isScreen && !local && IS_MOBILE ? `<button class="icon-btn b-kbd hidden" title="Abrir o teclado pra digitar no PC">${ICON_KBD}</button>` : ''}
           ${isScreen && !local ? `<button class="icon-btn b-ctrl hidden" title="Pedir pra controlar essa tela">${ICON_MOUSE}</button>` : ''}
           ${isScreen && !local ? `<button class="icon-btn b-annot hidden" title="Apontar/desenhar na tela">${ICON_PEN}</button>` : ''}
           ${local && isScreen ? `<button class="icon-btn b-preview" title="Ocultar/mostrar minha prévia">${ICON_EYE}</button>` : ''}
@@ -2377,6 +2552,14 @@ function addTile({ key, kind, local, stream, peerId }) {
     if (ctrlBtn) ctrlBtn.addEventListener('click', () => requestControl(t));
     if (el.querySelector('.ctrl-catch')) setupCtrlInput(t);
     video.addEventListener('dblclick', () => toggleFullscreen(el));
+    if (IS_MOBILE) {
+      // Sem "passar o mouse" no celular: tocar no vídeo mostra os botões por uns segundos.
+      video.addEventListener('click', () => {
+        el.classList.add('bar-on');
+        clearTimeout(el.barTimer);
+        el.barTimer = setTimeout(() => el.classList.remove('bar-on'), 4000);
+      });
+    }
     const canvas = el.querySelector('canvas.annot');
     if (canvas) t.layer = new AnnotLayer(canvas, () => contentRect(video));
     if (el.querySelector('.annot-catch')) setupAnnotInput(t);
@@ -2828,11 +3011,13 @@ function renderSettings() {
     savePref('sounds', v ? '1' : '0');
     if (v) beep('chat');
   }));
-  prefs.appendChild(switchRow('Ocultar minha prévia', 'Não mostra sua própria tela pra você. Economiza PC.', state.hidePreview, setHidePreview));
-  prefs.appendChild(switchRow('Deixar os amigos apontarem na minha tela', 'Ponteiro, marcações e riscos em cima da tela que você compartilha.', state.annotAllow, (v) => {
-    if (v !== state.annotAllow) toggleAnnotAllow();
-  }));
-  prefs.appendChild(switchRow('Permitir pedidos de controle da minha tela', 'Os amigos podem pedir pra usar seu mouse e teclado. Você sempre precisa aceitar, e Ctrl+Alt+X corta na hora.', state.ctrlAllow, toggleCtrlAllow));
+  if (!IS_MOBILE) {
+    prefs.appendChild(switchRow('Ocultar minha prévia', 'Não mostra sua própria tela pra você. Economiza PC.', state.hidePreview, setHidePreview));
+    prefs.appendChild(switchRow('Deixar os amigos apontarem na minha tela', 'Ponteiro, marcações e riscos em cima da tela que você compartilha.', state.annotAllow, (v) => {
+      if (v !== state.annotAllow) toggleAnnotAllow();
+    }));
+    prefs.appendChild(switchRow('Permitir pedidos de controle da minha tela', 'Os amigos podem pedir pra usar seu mouse e teclado. Você sempre precisa aceitar, e Ctrl+Alt+X corta na hora.', state.ctrlAllow, toggleCtrlAllow));
+  }
   body.appendChild(prefs);
 
   // Cores do ponteiro e do desenho
@@ -2996,7 +3181,8 @@ function renderSettings() {
 
 // Abre o LivePix do Fate Café no navegador padrão (o app nunca navega pra fora).
 function openDonate() {
-  window.open(DONATE_URL, '_blank');
+  if (telinha.openExternal) telinha.openExternal(DONATE_URL);
+  else window.open(DONATE_URL, '_blank');
 }
 
 function openSettings() {
@@ -3234,6 +3420,13 @@ async function init() {
     layoutGrid();
   });
   $('#chatBtn').classList.add('on');
+  if (IS_MOBILE) {
+    $('#screenBtn').classList.add('hidden'); // compartilhar a tela do celular: próxima fase
+    if (window.innerWidth < 900) {
+      $('#side').classList.add('collapsed');
+      $('#chatBtn').classList.remove('on');
+    }
+  }
   $('#settingsBtn').addEventListener('click', openSettings);
   $('#settingsClose').addEventListener('click', closeSettings);
   $('#settings').addEventListener('mousedown', (e) => { if (e.target.id === 'settings') closeSettings(); });

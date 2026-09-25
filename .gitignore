@@ -17,3 +17,6 @@ Desktop.ini
 # Editores
 .vscode/
 .idea/
+
+# App Android: interface gerada a partir de src/renderer
+mobile/www/

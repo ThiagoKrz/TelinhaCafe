@@ -444,3 +444,44 @@ legend { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color
 .draw-tools .size.on { background: var(--accent-soft-2); }
 .color-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; flex-wrap: wrap; }
 .swatches { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* ---------- Celular (APK Android) ---------- */
+.tile .ctrl-catch, .tile .annot-catch { touch-action: none; }
+.ctrl-kbd { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; pointer-events: none; }
+html.mobile body { -webkit-tap-highlight-color: transparent; }
+html.mobile .tile.bar-on .tile-bar { opacity: 1; }
+html.mobile .icon-btn { width: 40px; height: 40px; border-radius: 10px; }
+html.mobile .tile-actions { gap: 8px; }
+html.mobile .btn { height: 40px; }
+html.mobile .btn.icon-only { width: 42px; }
+html.mobile #home { padding: 16px; overflow-y: auto; }
+html.mobile .home-card { width: min(420px, 100%); }
+html.mobile .topbar { padding-top: max(10px, env(safe-area-inset-top)); padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
+html.mobile .switch-row input { width: 44px; height: 26px; }
+html.mobile .switch-row input::after { width: 20px; height: 20px; }
+html.mobile .switch-row input:checked::after { left: 20px; }
+
+@media (max-width: 900px) {
+  .controls { gap: 6px; }
+  .controls .btn.ctl { width: 42px; padding: 0; justify-content: center; }
+  .controls .btn.ctl > span:not(.dot) { display: none; }
+  .ctl-select { max-width: 120px; }
+  .room-body { position: relative; }
+  #side { position: absolute; top: 0; right: 0; bottom: 0; width: min(420px, 100%); z-index: 12; box-shadow: -12px 0 30px rgba(0, 0, 0, .45); }
+  .modal-card, .modal-card.narrow { width: calc(100vw - 20px); max-height: calc(100vh - 20px); }
+  .picker-options { grid-template-columns: 1fr; }
+  #stage { padding: 8px; }
+}
+@media (max-width: 560px) {
+  .topbar { flex-wrap: wrap; row-gap: 8px; }
+  .controls { width: 100%; justify-content: space-between; }
+  .room-info .muted, #roleBadge { display: none; }
+  .tile-label .stats { display: none; }
+}
+/* Celular em pé: o vídeo em destaque fica no topo na proporção dele, não esticado na altura toda. */
+@media (max-width: 900px) and (max-aspect-ratio: 1/1) {
+  #focusArea { flex: 0 0 auto; }
+  #focusArea .tile { flex: 1 1 auto; aspect-ratio: 16 / 9; }
+  #stage.focus-mode #grid { flex: 0 0 auto; height: 130px; }
+  #grid { align-content: start; }
+}

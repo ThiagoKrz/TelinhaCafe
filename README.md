@@ -8,9 +8,11 @@ Compartilhamento de tela e câmera entre amigos (até 6 pessoas), direto P2P via
 Última versão em **[Releases](https://github.com/ThiagoKrz/TelinhaCafe/releases/latest)**.
 
 ## Instalar
-- **`TelinhaCafe-Setup-1.2.0.exe`** (recomendado): instala só pro seu usuário (não pede administrador),
+- **`TelinhaCafe-Setup-1.3.0.exe`** (recomendado): instala só pro seu usuário (não pede administrador),
   cria atalho na área de trabalho e no menu Iniciar. Pra atualizar, é só rodar o instalador da versão nova por cima.
-- **`TelinhaCafe-1.2.0-portatil.exe`**: roda sem instalar (demora uns segundos a mais pra abrir).
+- **`TelinhaCafe-1.3.0-portatil.exe`**: roda sem instalar (demora uns segundos a mais pra abrir).
+- **`TelinhaCafe-1.3.0.apk`** (Android 7+): entra nas mesmas salas do PC. Ao instalar, permita "instalar apps de
+  fontes desconhecidas".
 - Na 1ª vez o Windows pode mostrar "O Windows protegeu o computador" → **Mais informações → Executar assim mesmo**
   (o app não é assinado).
 - **Todo mundo da sala precisa da mesma versão.** Se não for, o app avisa quem precisa atualizar.
@@ -21,6 +23,13 @@ Compartilhamento de tela e câmera entre amigos (até 6 pessoas), direto P2P via
 3. Em cada vídeo: volume, destacar, tela cheia, janela flutuante e **✕ tirar da tela**. Ao tirar, a pessoa
    para de te mandar aquele vídeo (economiza internet e PC); ele fica numa barra em cima pra "mostrar" de novo.
 4. Compartilhando, o botão **Trocar** muda a tela/janela/áudio sem derrubar a transmissão.
+
+### 📱 No Android
+- Entra nas mesmas salas de quem está no PC (mesmo código).
+- Assistir tela e câmera, ligar a câmera do celular, chat, reações, foto, desenhar com o dedo.
+- **Controlar o PC pelo celular**: tocar = clique, segurar = botão direito, arrastar = arrastar, dois dedos = rolar,
+  e o botão ⌨ abre o teclado (digita no PC, com acentos no padrão ABNT2).
+- Ainda não dá pra compartilhar a tela do celular (próxima fase).
 
 ### Áudio da tela
 - **Som do PC, sem o Discord**: todo o som do PC menos o Discord (sem eco na call).
@@ -81,9 +90,23 @@ npm run dist       # gera dist/TelinhaCafe-Setup-x.y.z.exe e dist/TelinhaCafe-x.
 Requisitos pra compilar: Node.js 20+ e Windows (o `native/AudioCap.exe` é compilado com o `csc.exe` do .NET Framework
 que já vem no Windows).
 
+### Android (pasta `mobile/`)
+A interface é a mesma do PC (`src/renderer`), empacotada com Capacitor; `mobile/web/mobile-shim.js` faz o papel do
+preload do Electron. Precisa do Android SDK e de um JDK 21+ (`JAVA_HOME`).
+```
+cd mobile
+npm install
+npm run apk          # gera android/app/build/outputs/apk/release/app-release.apk (assinado)
+npm run apk:debug    # versão de teste (com depuração do WebView)
+npm run assets       # regera ícones e tela de abertura a partir do logo
+```
+A chave de assinatura fica em `mobile/android/telinha-release.jks` + `keystore.properties` (fora do git).
+**Guarde uma cópia**: sem ela não dá pra lançar atualização do APK (os amigos teriam que desinstalar).
+
 ### Lançar uma versão nova
 1. Suba `version` no `package.json` e rode `npm run dist`.
-2. Crie um Release no GitHub com a tag `vX.Y.Z` e anexe `dist/TelinhaCafe-Setup-X.Y.Z.exe` e `dist/TelinhaCafe-X.Y.Z-portatil.exe`.
+2. `cd mobile && npm run apk` e copie o APK pra `dist/TelinhaCafe-X.Y.Z.apk`.
+3. Crie um Release no GitHub com a tag `vX.Y.Z` e anexe o instalador, o portátil e o APK.
 - `src/main.js`: processo principal (seletor de tela, capturador de áudio, camada de ponteiros)
 - `src/renderer/app.js`: salas, WebRTC em malha, UI
 - `src/renderer/annot.js` + `overlay.html`: desenho de ponteiros/riscos

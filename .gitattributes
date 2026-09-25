@@ -3,3 +3,7 @@
 *.png binary
 *.ico binary
 *.exe binary
+*.bat text eol=crlf
+*.jar binary
+*.woff2 binary
+*.webp binary

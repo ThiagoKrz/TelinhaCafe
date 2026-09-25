@@ -1,0 +1,9 @@
+{
+  "appId": "br.telinha.cafe",
+  "appName": "Telinha Café",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#2A2320",
+    "allowMixedContent": false
+  }
+}
