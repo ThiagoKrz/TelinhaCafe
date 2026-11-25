@@ -44,4 +44,9 @@ contextBridge.exposeInMainWorld('telinha', {
     ipcRenderer.removeAllListeners('update-progress');
     ipcRenderer.on('update-progress', (_e, p) => cb(p));
   },
+  setTrayState: (st) => ipcRenderer.send('tray-state', st),
+  onTrayAction: (cb) => {
+    ipcRenderer.removeAllListeners('tray-action');
+    ipcRenderer.on('tray-action', (_e, action) => cb(action));
+  },
 });

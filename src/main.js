@@ -10,6 +10,8 @@ app.setPath('userData', path.join(app.getPath('appData'),
   process.env.TELINHA_PROFILE ? 'Telinha-' + process.env.TELINHA_PROFILE.replace(/[^\w-]/g, '') : 'Telinha'));
 
 let win = null;
+let tray = null;
+let trayState = { sharing: false, paused: false, controlling: false };
 let overlayWin = null;       // camada transparente com os ponteiros dos amigos, por cima da tela compartilhada
 let pendingShare = null;     // { id, audio } escolhido no seletor, usado pelo getDisplayMedia
 let audioProc = null;
@@ -138,6 +140,44 @@ function createWindow() {
     stopControl();
     hideOverlay();
   });
+  ensureTray();
+}
+
+function updateTrayMenu() {
+  if (!tray) return;
+  const status = trayState.sharing
+    ? (trayState.paused ? 'Telinha Café · Tela pausada' : 'Telinha Café · Transmitindo tela')
+    : 'Telinha Café';
+  tray.setToolTip(status);
+  const items = [
+    { label: 'Abrir Telinha Café', click: () => { if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } } },
+  ];
+  if (trayState.sharing) {
+    items.push({ type: 'separator' });
+    items.push({ label: trayState.paused ? 'Retomar tela' : 'Pausar tela (privacidade)', click: () => sendToRenderer('tray-action', 'toggle-pause') });
+    items.push({ label: 'Parar compartilhamento', click: () => sendToRenderer('tray-action', 'stop-screen') });
+  }
+  if (trayState.controlling) {
+    items.push({ label: 'Cortar controle remoto', click: () => sendToRenderer('control-shortcut', 'revoke') });
+  }
+  items.push({ type: 'separator' });
+  items.push({ label: 'Sair', click: () => app.quit() });
+  tray.setContextMenu(Menu.buildFromTemplate(items));
+}
+
+function ensureTray() {
+  if (tray || process.platform !== 'win32') return;
+  try {
+    const icon = nativeImage.createFromPath(path.join(__dirname, 'renderer', 'icon.png')).resize({ width: 16, height: 16 });
+    tray = new Tray(icon);
+    tray.on('click', () => {
+      if (!win) return;
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    });
+    updateTrayMenu();
+  } catch {}
 }
 
 app.whenReady().then(() => {
@@ -170,7 +210,16 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  if (tray) { try { tray.destroy(); } catch {} tray = null; }
+});
+
+ipcMain.on('tray-state', (_e, st) => {
+  if (!st || typeof st !== 'object') return;
+  trayState = { sharing: !!st.sharing, paused: !!st.paused, controlling: !!st.controlling };
+  updateTrayMenu();
+});
 
 function sendToRenderer(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -285,6 +334,7 @@ ipcMain.handle('audio-start', (_e, opts = {}) => {
 
     let args = ['--self-pid', String(process.pid)];
     if (opts.mode === 'app') args = ['--include-pid', String(Number(opts.pid) || 0)];
+    else if (opts.mode === 'exclude') args = ['--exclude-pid', String(Number(opts.pid) || 0)];
     else if (opts.mode === 'window') {
       const hwnd = /^window:(\d+):/.exec(String(opts.sourceId || ''));
       if (!hwnd) return resolve({ ok: false, error: 'Essa opção só funciona compartilhando uma janela.' });

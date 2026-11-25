@@ -200,10 +200,12 @@ namespace AudioCap
 
             if (Array.IndexOf(args, "--list-sessions") >= 0) return ListSessions(selfPid);
 
-            // Modo "so um app": resolve o processo alvo.
+            // Modo "so um app" ou "excluir um app": resolve o processo alvo.
             int includePid = -1;
+            int excludePid = -1;
             string hwndArg = Arg(args, "--include-hwnd");
             string pidArg = Arg(args, "--include-pid");
+            string exPidArg = Arg(args, "--exclude-pid");
             if (hwndArg != null)
             {
                 long hwnd;
@@ -213,6 +215,10 @@ namespace AudioCap
                 includePid = AppRoot((int)pid, Snapshot());
             }
             else if (pidArg != null && !int.TryParse(pidArg, out includePid))
+            {
+                Log("ERROR PID invalido."); return 1;
+            }
+            else if (exPidArg != null && !int.TryParse(exPidArg, out excludePid))
             {
                 Log("ERROR PID invalido."); return 1;
             }
@@ -244,6 +250,15 @@ namespace AudioCap
                 RunCapture(includePid, MODE_INCLUDE, "app", true, out err);
                 if (err != null) { Log("ERROR " + err); return 1; }
                 Log("ERROR O programa que estava sendo capturado fechou.");
+                return 2;
+            }
+            if (excludePid > 0)
+            {
+                if (!IsAlive(excludePid)) { Log("ERROR Esse programa ja fechou."); return 1; }
+                string err;
+                RunCapture(excludePid, MODE_EXCLUDE, "exclude", true, out err);
+                if (err != null) { Log("ERROR " + err); return 1; }
+                Log("ERROR O programa excluido fechou.");
                 return 2;
             }
 

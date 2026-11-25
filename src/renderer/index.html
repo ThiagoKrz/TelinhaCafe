@@ -207,6 +207,13 @@
           <input type="radio" name="audioMode" value="nodiscord">
           <span><b>Som do PC, sem o Discord</b><small id="noDiscordHint">Todo mundo ouve o PC, menos a call. Sem eco.</small></span>
         </label>
+        <label class="radio" id="optExclude">
+          <input type="radio" name="audioMode" value="exclude">
+          <span class="grow"><b>Som do PC, sem…</b>
+            <span class="app-row"><select id="excludeSelect"></select></span>
+            <small id="excludeHint">Exclui qualquer app específico (TeamSpeak, WhatsApp, navegador…).</small>
+          </span>
+        </label>
         <label class="radio" id="optApp">
           <input type="radio" name="audioMode" value="app">
           <span class="grow"><b>Só o som de…</b>

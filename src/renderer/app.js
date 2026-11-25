@@ -2139,6 +2139,7 @@ async function applyScreenAudio(sel, loopTrack) {
   });
 
   const opts = mode === 'nodiscord' ? { mode: 'nodiscord' }
+    : mode === 'exclude' ? { mode: 'exclude', pid: Number(sel.excludePid) }
     : sel.appTarget === 'window' ? { mode: 'window', sourceId: sel.sourceId }
     : { mode: 'app', pid: Number(sel.appTarget) };
   const res = await telinha.startAudio(opts);
@@ -2151,6 +2152,8 @@ async function applyScreenAudio(sel, loopTrack) {
     toast(res.target === 'discord'
       ? 'Som do PC ligado. O Discord ficou de fora.'
       : 'Som do PC ligado. O Discord não está aberto; se abrir, ele sai do áudio automaticamente.');
+  } else if (mode === 'exclude') {
+    toast('Som do PC ligado, excluindo o app escolhido.');
   } else {
     toast(opts.mode === 'window' ? 'Som só desta janela ligado.' : 'Som só deste app ligado.');
   }
@@ -3434,6 +3437,9 @@ function updateControls() {
   cb.disabled = !cam && !allowed;
   cb.title = why;
   $('#camSelect').classList.toggle('hidden', !cam || Number($('#camSelect').dataset.count || 0) < 2);
+  if (telinha.setTrayState) {
+    telinha.setTrayState({ sharing, paused: state.screenPaused, controlling: !!state.ctrl.granted });
+  }
 }
 
 function pingClass(rtt) {
@@ -4036,8 +4042,9 @@ async function openPicker(mode = 'start') {
   const [probe, sources] = await Promise.all([picker.probe, telinha.getSources()]);
   picker.probeOk = probe.ok;
 
-  for (const id of ['#optNoDiscord', '#optApp']) {
+  for (const id of ['#optNoDiscord', '#optExclude', '#optApp']) {
     const opt = $(id);
+    if (!opt) continue;
     opt.querySelector('input').disabled = !probe.ok;
     opt.classList.toggle('disabled', !probe.ok);
   }
@@ -4047,7 +4054,7 @@ async function openPicker(mode = 'start') {
 
   const prev = mode === 'switch' && state.screenSel ? state.screenSel : null;
   let audioMode = prev ? prev.audioMode : loadPref('audioMode', probe.ok ? 'nodiscord' : 'none');
-  if ((audioMode === 'nodiscord' || audioMode === 'app') && !probe.ok) audioMode = 'none';
+  if ((audioMode === 'nodiscord' || audioMode === 'exclude' || audioMode === 'app') && !probe.ok) audioMode = 'none';
   document.querySelector(`input[name=audioMode][value=${audioMode}]`).checked = true;
 
   $('#qualitySelect').value = state.quality;
@@ -4092,6 +4099,25 @@ function renderAppOptions(current) {
   }
   if (current && [...sel.options].some((o) => o.value === String(current))) sel.value = String(current);
   $('#appHint').textContent = '● = tocando som agora. Se o app não aparece, dê play nele e clique em ↻.';
+
+  const exSel = $('#excludeSelect');
+  if (exSel) {
+    const prevEx = exSel.value;
+    exSel.innerHTML = '';
+    for (const a of picker.apps) {
+      const o = document.createElement('option');
+      o.value = String(a.pid);
+      o.textContent = `${a.active ? '● ' : ''}${a.name}${counts[a.name] > 1 && a.exe ? ` (${a.exe})` : ''}`;
+      exSel.appendChild(o);
+    }
+    if (!exSel.options.length) {
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = 'Nenhum app tocando som agora';
+      exSel.appendChild(o);
+    }
+    if (prevEx && [...exSel.options].some((o) => o.value === prevEx)) exSel.value = prevEx;
+  }
 }
 
 function renderSources() {
@@ -4154,15 +4180,20 @@ function confirmPicker() {
   if (!picker.selected) return;
   const audioMode = document.querySelector('input[name=audioMode]:checked').value;
   const appTarget = $('#appSelect').value;
+  const excludePid = $('#excludeSelect') ? $('#excludeSelect').value : '';
   if (audioMode === 'app' && !appTarget) {
     toast('Escolha de qual app vai o som (ou outra opção de áudio).', 'error');
+    return;
+  }
+  if (audioMode === 'exclude' && !excludePid) {
+    toast('Escolha qual app excluir do áudio (ou outra opção).', 'error');
     return;
   }
   const quality = $('#qualitySelect').value;
   savePref('audioMode', audioMode);
   savePref('quality', quality);
   closePicker();
-  const sel = { sourceId: picker.selected, audioMode, appTarget, quality };
+  const sel = { sourceId: picker.selected, audioMode, appTarget, excludePid, quality };
   if (picker.mode === 'switch' && state.local.screen) {
     withBusy($('#switchBtn'), 'Trocando…', () => switchScreen(sel));
   } else {
@@ -4341,6 +4372,13 @@ async function init() {
   }));
   $('#qualitySelect').addEventListener('change', updateQualityHint);
   $('#appSelect').addEventListener('change', () => { document.querySelector('input[name=audioMode][value=app]').checked = true; });
+  $('#excludeSelect').addEventListener('change', () => { document.querySelector('input[name=audioMode][value=exclude]').checked = true; });
+  if (telinha.onTrayAction) {
+    telinha.onTrayAction((action) => {
+      if (action === 'toggle-pause') togglePauseScreen();
+      else if (action === 'stop-screen') stopScreen();
+    });
+  }
   $('#appRefresh').addEventListener('click', (e) => {
     e.preventDefault();
     loadAudioApps();

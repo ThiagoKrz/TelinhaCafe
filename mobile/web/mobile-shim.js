@@ -70,6 +70,8 @@
       if (/^https:\/\//.test(url)) window.location.href = url;
     },
     onUpdateProgress: noop,
+    setTrayState: noop,
+    onTrayAction: noop,
     async checkUpdate() {
       const current = '__APP_VERSION__';
       try {
