@@ -504,6 +504,18 @@ legend { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color
 .update-msg { font-size: 13px; font-weight: 600; color: var(--cream); }
 .update-bar { margin-top: 8px; height: 6px; border-radius: 99px; background: rgba(0, 0, 0, .35); overflow: hidden; }
 .update-bar i { display: block; height: 100%; width: 0%; background: var(--accent); border-radius: 99px; transition: width .15s linear; }
+.draw-tools .tool-btn { font-size: 13px; color: var(--cream); min-width: 26px; }
+html[data-theme="amoled"] {
+  --bg: #000000;
+  --panel: #0a0a0a;
+  --panel-2: #121212;
+  --deep: #000000;
+  --line: #232323;
+}
+html[data-theme="amoled"] body,
+html[data-theme="amoled"] #home,
+html[data-theme="amoled"] #room,
+html[data-theme="amoled"] #stage { background: #000000; }
 
 /* ---------- Celular (APK Android) ---------- */
 .tile .ctrl-catch, .tile .annot-catch { touch-action: none; }

@@ -167,6 +167,9 @@ const state = {
   ptrColor: loadPref('ptrColor', ''),
   drawColor: loadPref('drawColor', ''),
   drawSize: Number(loadPref('drawSize', '1')) || 1,
+  drawTool: 'pen',             // 'pen' | 'arrow' | 'circle' | 'rect' | 'eraser'
+  drawPin: false,              // false = temporário (some sozinho), true = Modo Desenho Real (fixo)
+  drawHistory: [],             // [{ ownerId, id }] para Ctrl+Z / Desfazer
   // Controle remoto. Como dono da tela: granted (quem controla) e pending (pedidos na fila).
   // Como quem assiste: asking (pedi e estou esperando) e controlling (estou controlando).
   ctrl: { granted: null, pending: [], asking: null, controlling: null, cooldown: new Map() },
@@ -185,6 +188,10 @@ const state = {
   join: null,
   sounds: loadPref('sounds', '1') === '1',
   overlayReactions: loadPref('overlayReactions', '1') === '1',
+  theme: loadPref('theme', 'cafe'),
+  screenPaused: false,
+  pausedTrack: null,
+  liveVideoTrack: null,
   hidePreview: loadPref('hidePreview', '0') === '1',
   lastReact: 0,
 };
@@ -1835,9 +1842,124 @@ async function startMobileScreen() {
   toast('Compartilhando a tela do celular!');
 }
 
+function applyTheme(theme) {
+  state.theme = theme === 'amoled' ? 'amoled' : 'cafe';
+  savePref('theme', state.theme);
+  document.documentElement.dataset.theme = state.theme;
+}
+
+function makePausedTrack() {
+  const c = document.createElement('canvas');
+  c.width = 1280;
+  c.height = 720;
+  const g = c.getContext('2d');
+  g.fillStyle = '#1C1614';
+  g.fillRect(0, 0, c.width, c.height);
+  g.strokeStyle = '#D4A373';
+  g.lineWidth = 4;
+  g.beginPath();
+  g.roundRect(380, 260, 520, 200, 20);
+  g.stroke();
+  g.fillStyle = '#F1DFC8';
+  g.font = '700 36px "Segoe UI", sans-serif';
+  g.textAlign = 'center';
+  g.fillText('⏸  Tela pausada', 640, 345);
+  g.fillStyle = '#9C8B7D';
+  g.font = '400 22px "Segoe UI", sans-serif';
+  g.fillText('Modo privacidade ativo — já volto!', 640, 400);
+  return c.captureStream(1).getVideoTracks()[0];
+}
+
+async function togglePauseScreen() {
+  const stream = state.local.screen;
+  if (!stream || IS_MOBILE) return;
+  const wantPause = !state.screenPaused;
+  if (wantPause) {
+    const liveVt = stream.getVideoTracks()[0];
+    if (!liveVt) return;
+    const pausedVt = makePausedTrack();
+    state.liveVideoTrack = liveVt;
+    state.pausedTrack = pausedVt;
+    state.screenPaused = true;
+    for (const p of state.peers.values()) {
+      const pc = p.out.screen && p.out.screen.peerConnection;
+      if (!pc) continue;
+      const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+      if (sender) { try { await sender.replaceTrack(pausedVt); } catch {} }
+    }
+    const at = stream.getAudioTracks()[0];
+    if (at) at.enabled = false;
+    stream.removeTrack(liveVt);
+    stream.addTrack(pausedVt);
+    toast('Tela pausada (Modo Privacidade).');
+  } else {
+    const liveVt = state.liveVideoTrack;
+    const pausedVt = state.pausedTrack;
+    state.screenPaused = false;
+    state.liveVideoTrack = null;
+    state.pausedTrack = null;
+    if (liveVt && liveVt.readyState === 'live') {
+      for (const p of state.peers.values()) {
+        const pc = p.out.screen && p.out.screen.peerConnection;
+        if (!pc) continue;
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (sender) { try { await sender.replaceTrack(liveVt); } catch {} }
+      }
+      if (pausedVt) stream.removeTrack(pausedVt);
+      stream.addTrack(liveVt);
+    }
+    if (pausedVt) pausedVt.stop();
+    const at = stream.getAudioTracks()[0];
+    if (at) at.enabled = true;
+    toast('Transmissão retomada!');
+  }
+  const t = tiles.get(tileKey('me', 'screen'));
+  if (t) { t.video.srcObject = null; applyPreview(t); }
+  updateControls();
+}
+
+async function takeTileScreenshot(t) {
+  const v = t && t.video;
+  if (!v || !v.videoWidth || !v.videoHeight) {
+    toast('Nenhum vídeo visível pra tirar print.', 'error');
+    return;
+  }
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth;
+  c.height = v.videoHeight;
+  const g = c.getContext('2d');
+  g.drawImage(v, 0, 0, c.width, c.height);
+  const annotCanvas = t.el.querySelector('canvas.annot');
+  if (annotCanvas && annotCanvas.width && annotCanvas.height) {
+    const cr = contentRect(v);
+    if (cr.w > 0 && cr.h > 0) {
+      const dpr = window.devicePixelRatio || 1;
+      g.drawImage(annotCanvas, cr.x * dpr, cr.y * dpr, cr.w * dpr, cr.h * dpr, 0, 0, c.width, c.height);
+    }
+  }
+  const dataUrl = c.toDataURL('image/png');
+  const ok = telinha.copyImage ? await telinha.copyImage(dataUrl) : false;
+  toast(ok ? (IS_MOBILE ? 'Print salvo!' : 'Print copiado pra área de transferência!') : 'Não consegui copiar o print.', ok ? '' : 'error');
+}
+
+async function pasteToRemote(t) {
+  const p = state.ctrl.controlling === t.peerId ? state.peers.get(t.peerId) : null;
+  if (!p) return;
+  const text = telinha.readClipboard ? String(await telinha.readClipboard() || '') : '';
+  if (!text) {
+    toast('Área de transferência vazia. Copie um texto antes.', 'error');
+    return;
+  }
+  typeText(p, text.slice(0, 200));
+  toast(`Texto enviado (${Math.min(200, text.length)} caracteres).`);
+}
+
 function stopScreen() {
   const s = state.local.screen;
   if (!s) return;
+  if (state.liveVideoTrack) { try { state.liveVideoTrack.stop(); } catch {} state.liveVideoTrack = null; }
+  if (state.pausedTrack) { try { state.pausedTrack.stop(); } catch {} state.pausedTrack = null; }
+  state.screenPaused = false;
   if (telinha.mobileScreenStop) telinha.mobileScreenStop();
   revokeControl('Você parou de compartilhar; o controle acabou.', true);
   denyAllPending('Parou de compartilhar a tela.');
@@ -2070,7 +2192,7 @@ function annotAllowedFor(ownerId) {
 // Chegou um ponteiro/risco de alguém.
 function onAnnot(p, d) {
   if (typeof d.to !== 'string' || !d.a || typeof d.a !== 'object') return;
-  if (!['ptr', 'stroke', 'shape', 'mark', 'clear'].includes(d.a.type)) return;
+  if (!['ptr', 'stroke', 'shape', 'mark', 'erase', 'clear'].includes(d.a.type)) return;
   if (!annotAllowedFor(d.to)) return;
   const evt = { ...d.a, from: p.id, name: p.name, color: isHex(d.a.color) ? d.a.color : colorFor(p.name) };
   drawAnnot(d.to, evt);
@@ -2127,21 +2249,29 @@ function setupAnnotInput(t) {
     const y = (e.clientY - rect.top - cr.y) / cr.h;
     return x < 0 || x > 1 || y < 0 || y > 1 ? null : [Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000];
   };
+  let erasing = false;
+  const tryEraseAt = (n) => {
+    if (!n || !t.layer) return;
+    const hitId = t.layer.hitTest(n[0], n[1]);
+    if (hitId) sendAnnot(t.peerId, { type: 'erase', id: hitId });
+  };
   const flush = (end) => {
     if (!stroke) return;
-    if (stroke.pending.length || end) sendAnnot(t.peerId, { type: 'stroke', sid: stroke.sid, pts: stroke.pending, end: !!end });
+    if (stroke.pending.length || end) sendAnnot(t.peerId, { type: 'stroke', sid: stroke.sid, pts: stroke.pending, end: !!end, pin: stroke.pin });
     stroke.pending = [];
   };
   catcher.addEventListener('pointermove', (e) => {
     const n = norm(e);
     const now = performance.now();
-    if (stroke && n) {
+    if (erasing && n) {
+      tryEraseAt(n);
+    } else if (stroke && n) {
       if (stroke.shape) {
         stroke.last = n;
         if (Math.abs(n[0] - stroke.down[0]) + Math.abs(n[1] - stroke.down[1]) > 0.01) stroke.moved = true;
         if (now - stroke.lastSent > 40) {
           stroke.lastSent = now;
-          drawAnnot(t.peerId, { type: 'shape', kind: stroke.shape, x1: stroke.down[0], y1: stroke.down[1], x2: n[0], y2: n[1], w: state.drawSize, color: myDrawColor(), preview: true, from: state.myId, name: 'Você' });
+          drawAnnot(t.peerId, { type: 'shape', kind: stroke.shape, sid: stroke.sid, x1: stroke.down[0], y1: stroke.down[1], x2: n[0], y2: n[1], w: state.drawSize, color: myDrawColor(), pin: stroke.pin, preview: true, from: state.myId, name: 'Você' });
         }
       } else {
         stroke.pending.push(n);
@@ -2158,21 +2288,39 @@ function setupAnnotInput(t) {
     const n = norm(e);
     if (!n) return;
     catcher.setPointerCapture(e.pointerId);
-    const shape = e.shiftKey ? 'arrow' : e.altKey ? 'circle' : null;
-    stroke = { sid: Math.random().toString(36).slice(2, 10), pending: [n], down: n, last: n, moved: false, shape, lastSent: 0 };
+    if (state.drawTool === 'eraser') {
+      erasing = true;
+      tryEraseAt(n);
+      return;
+    }
+    const shape = e.shiftKey ? 'arrow' : e.altKey ? 'circle'
+      : ['arrow', 'circle', 'rect'].includes(state.drawTool) ? state.drawTool : null;
+    stroke = { sid: Math.random().toString(36).slice(2, 10), pending: [n], down: n, last: n, moved: false, shape, pin: state.drawPin, lastSent: 0 };
     if (!shape) stroke.timer = setInterval(() => { if (stroke && stroke.moved) flush(false); }, 60);
   });
   const up = (e) => {
+    if (erasing) {
+      erasing = false;
+      try { catcher.releasePointerCapture(e.pointerId); } catch {}
+      return;
+    }
     if (!stroke) return;
     clearInterval(stroke.timer);
     if (stroke.shape) {
       if (stroke.moved) {
-        sendAnnot(t.peerId, { type: 'shape', kind: stroke.shape, x1: stroke.down[0], y1: stroke.down[1], x2: stroke.last[0], y2: stroke.last[1], preview: false });
+        sendAnnot(t.peerId, { type: 'shape', kind: stroke.shape, sid: stroke.sid, x1: stroke.down[0], y1: stroke.down[1], x2: stroke.last[0], y2: stroke.last[1], pin: stroke.pin, preview: false });
+        state.drawHistory.push({ ownerId: t.peerId, id: stroke.sid });
+        if (state.drawHistory.length > 50) state.drawHistory.shift();
       } else {
         sendAnnot(t.peerId, { type: 'mark', x: stroke.down[0], y: stroke.down[1] });
       }
-    } else if (stroke.moved) flush(true);
-    else sendAnnot(t.peerId, { type: 'mark', x: stroke.down[0], y: stroke.down[1] });
+    } else if (stroke.moved) {
+      flush(true);
+      state.drawHistory.push({ ownerId: t.peerId, id: stroke.sid });
+      if (state.drawHistory.length > 50) state.drawHistory.shift();
+    } else {
+      sendAnnot(t.peerId, { type: 'mark', x: stroke.down[0], y: stroke.down[1] });
+    }
     stroke = null;
     try { catcher.releasePointerCapture(e.pointerId); } catch {}
   };
@@ -2195,11 +2343,56 @@ function setDrawMode(t, on) {
   if (on && !was) toast('Arraste pra riscar · Shift = seta · Alt = círculo · T = chat no mouse · Botão direito sai.');
 }
 
-// Paletinha que aparece no vídeo enquanto o lápis está ativo (cor, espessura e limpar).
+function undoDraw(ownerId) {
+  for (let i = state.drawHistory.length - 1; i >= 0; i--) {
+    if (state.drawHistory[i].ownerId === ownerId) {
+      const item = state.drawHistory.splice(i, 1)[0];
+      sendAnnot(ownerId, { type: 'erase', id: item.id });
+      return;
+    }
+  }
+}
+
+// Paletinha que aparece no vídeo enquanto o lápis está ativo (modo, ferramentas, cor, espessura e limpar).
 function renderDrawTools(t) {
   const box = t.el.querySelector('.draw-tools');
   if (!box) return;
   box.innerHTML = '';
+
+  const mkTool = (icon, title, active, onClick) => {
+    const b = document.createElement('button');
+    b.className = 'size tool-btn' + (active ? ' on' : '');
+    b.textContent = icon;
+    b.title = title;
+    b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+    return b;
+  };
+  const mkSep = () => { const s = document.createElement('span'); s.className = 'tools-sep'; return s; };
+
+  // Modo: Temporário (some sozinho) vs Fixo (Modo Desenho Real)
+  box.appendChild(mkTool(state.drawPin ? '📌' : '⏱', state.drawPin ? 'Modo Desenho Real (fixo) — clique pra voltar ao temporário' : 'Modo Temporário (some sozinho) — clique pra fixar desenhos', state.drawPin, () => {
+    state.drawPin = !state.drawPin;
+    toast(state.drawPin ? 'Modo Desenho Real: os traços ficam fixos até apagar.' : 'Modo Temporário: os traços somem sozinhos.');
+    refreshDrawTools();
+  }));
+  box.appendChild(mkSep());
+
+  // Ferramentas de desenho
+  const tools = [
+    ['✏️', 'Livre', 'pen'],
+    ['↗', 'Seta (ou Shift)', 'arrow'],
+    ['◯', 'Círculo (ou Alt)', 'circle'],
+    ['▭', 'Retângulo', 'rect'],
+    ['⌫', 'Borracha (clique/arraste no traço)', 'eraser'],
+  ];
+  for (const [icon, title, id] of tools) {
+    box.appendChild(mkTool(icon, title, state.drawTool === id, () => {
+      state.drawTool = id;
+      refreshDrawTools();
+    }));
+  }
+  box.appendChild(mkSep());
+
   const current = myDrawColor().toLowerCase();
   for (const c of PALETTE) {
     const b = document.createElement('button');
@@ -2217,9 +2410,8 @@ function renderDrawTools(t) {
   custom.addEventListener('input', () => setDrawColor(custom.value, false));
   custom.addEventListener('change', () => setDrawColor(custom.value));
   box.appendChild(custom);
-  const sep = document.createElement('span');
-  sep.className = 'tools-sep';
-  box.appendChild(sep);
+  box.appendChild(mkSep());
+
   [1, 2, 3].forEach((w) => {
     const b = document.createElement('button');
     b.className = 'size' + (state.drawSize === w ? ' on' : '');
@@ -2228,15 +2420,13 @@ function renderDrawTools(t) {
     b.addEventListener('click', (e) => { e.stopPropagation(); setDrawSize(w); });
     box.appendChild(b);
   });
-  const sep2 = document.createElement('span');
-  sep2.className = 'tools-sep';
-  box.appendChild(sep2);
-  const clr = document.createElement('button');
-  clr.className = 'size clear-btn';
-  clr.textContent = '🧹';
-  clr.title = 'Limpar desenhos na tela';
-  clr.addEventListener('click', (e) => { e.stopPropagation(); sendAnnot(t.peerId, { type: 'clear' }); });
-  box.appendChild(clr);
+  box.appendChild(mkSep());
+
+  box.appendChild(mkTool('↩', 'Desfazer último traço (Ctrl+Z)', false, () => undoDraw(t.peerId)));
+  box.appendChild(mkTool('🧹', 'Limpar todos os desenhos', false, () => {
+    state.drawHistory = state.drawHistory.filter((x) => x.ownerId !== t.peerId);
+    sendAnnot(t.peerId, { type: 'clear' });
+  }));
 }
 
 function refreshDrawTools() {
@@ -2513,6 +2703,10 @@ function updateCtrlButtons() {
     b.classList.toggle('waiting', state.ctrl.asking === t.peerId);
     const kbd = t.el.querySelector('.b-kbd');
     if (kbd) kbd.classList.toggle('hidden', state.ctrl.controlling !== t.peerId);
+    const paste = t.el.querySelector('.b-paste');
+    if (paste) paste.classList.toggle('hidden', state.ctrl.controlling !== t.peerId);
+    const qchat = t.el.querySelector('.b-qchat');
+    if (qchat) qchat.classList.toggle('hidden', state.ctrl.controlling !== t.peerId);
     b.title = state.ctrl.controlling === t.peerId ? 'Parar de controlar'
       : state.ctrl.asking === t.peerId ? 'Esperando a pessoa aceitar…'
       : 'Pedir pra controlar essa tela (mouse e teclado)';
@@ -2716,6 +2910,12 @@ function setupCtrlInput(t) {
       stopControlling();
       return;
     }
+    if (e.ctrlKey && e.altKey && e.code === 'KeyT') {
+      e.preventDefault();
+      releaseAll();
+      openQuickChat();
+      return;
+    }
     e.preventDefault();
     if (!SCANCODES[e.code]) return;
     held.add(e.code);
@@ -2845,9 +3045,12 @@ function addTile({ key, kind, local, stream, peerId }) {
         <span></span>
         <span class="tile-actions">
           ${isScreen && !local && IS_MOBILE ? `<button class="icon-btn b-kbd hidden" title="Abrir o teclado pra digitar no PC">${ICON_KBD}</button>` : ''}
+          ${isScreen && !local ? `<button class="icon-btn b-paste hidden" title="Colar texto da área de transferência no PC controlado">📋</button>` : ''}
+          ${isScreen && !local ? `<button class="icon-btn b-qchat hidden" title="Mensagem rápida no mouse (Ctrl+Alt+T)">💬</button>` : ''}
           ${isScreen && !local ? `<button class="icon-btn b-ctrl hidden" title="Pedir pra controlar essa tela">${ICON_MOUSE}</button>` : ''}
           ${isScreen && !local ? `<button class="icon-btn b-annot hidden" title="Apontar/desenhar na tela">${ICON_PEN}</button>` : ''}
           ${local && isScreen ? `<button class="icon-btn b-preview" title="Ocultar/mostrar minha prévia">${ICON_EYE}</button>` : ''}
+          <button class="icon-btn b-shot" title="Tirar print deste vídeo (copia pro clipboard)">📸</button>
           ${pipOk ? `<button class="icon-btn b-pip" title="Janela flutuante (por cima de tudo)">${ICON_PIP}</button>` : ''}
           <button class="icon-btn b-focus" title="Destacar">${ICON_FOCUS}</button>
           <button class="icon-btn b-full" title="Tela cheia">${ICON_FULL}</button>
@@ -2876,6 +3079,12 @@ function addTile({ key, kind, local, stream, peerId }) {
     if (annotBtn) annotBtn.addEventListener('click', () => setDrawMode(t, !el.classList.contains('drawing')));
     const ctrlBtn = el.querySelector('.b-ctrl');
     if (ctrlBtn) ctrlBtn.addEventListener('click', () => requestControl(t));
+    const pasteBtn = el.querySelector('.b-paste');
+    if (pasteBtn) pasteBtn.addEventListener('click', () => pasteToRemote(t));
+    const qchatBtn = el.querySelector('.b-qchat');
+    if (qchatBtn) qchatBtn.addEventListener('click', () => openQuickChat());
+    const shotBtn = el.querySelector('.b-shot');
+    if (shotBtn) shotBtn.addEventListener('click', () => takeTileScreenshot(t));
     if (el.querySelector('.ctrl-catch')) setupCtrlInput(t);
     video.addEventListener('dblclick', () => toggleFullscreen(el));
     if (IS_MOBILE) {
@@ -3203,6 +3412,12 @@ function updateControls() {
   sb.disabled = !sharing && !allowed;
   sb.title = why;
   $('#switchBtn').classList.toggle('hidden', !sharing || IS_MOBILE);
+  const pb = $('#pauseScreenBtn');
+  if (pb) {
+    pb.classList.toggle('hidden', !sharing || IS_MOBILE);
+    pb.classList.toggle('on', state.screenPaused);
+    pb.querySelector('span').textContent = state.screenPaused ? 'Retomar' : 'Pausar';
+  }
   const ab = $('#annotBtn');
   ab.classList.toggle('hidden', !sharing || IS_MOBILE);
   ab.classList.toggle('on', state.annotAllow);
@@ -3512,6 +3727,9 @@ function renderSettings() {
     state.sounds = v;
     savePref('sounds', v ? '1' : '0');
     if (v) beep('chat');
+  }));
+  prefs.appendChild(switchRow('Tema AMOLED (preto puro)', 'Fundo preto puro, ótimo pra assistir no escuro ou economizar bateria no celular.', state.theme === 'amoled', (v) => {
+    applyTheme(v ? 'amoled' : 'cafe');
   }));
   if (!IS_MOBILE) {
     prefs.appendChild(switchRow('Ocultar minha prévia', 'Não mostra sua própria tela pra você. Economiza PC.', state.hidePreview, setHidePreview));
@@ -3955,6 +4173,7 @@ function confirmPicker() {
 /* ---------------------------------------------------------------- eventos */
 
 async function init() {
+  applyTheme(state.theme);
   if (!PeerCtor) {
     setHomeStatus('Falha ao carregar o PeerJS.', true);
     return;
@@ -4033,6 +4252,7 @@ async function init() {
     else openPicker('start');
   });
   $('#switchBtn').addEventListener('click', () => openPicker('switch'));
+  $('#pauseScreenBtn').addEventListener('click', togglePauseScreen);
   $('#annotBtn').addEventListener('click', toggleAnnotAllow);
   $('#qualityLive').addEventListener('change', (e) => changeLiveQuality(e.target.value));
   $('#camBtn').addEventListener('click', () => (state.local.camera ? stopCamera() : withBusy($('#camBtn'), 'Abrindo…', () => startCamera(state.cameraId))));
@@ -4141,6 +4361,14 @@ async function init() {
       return;
     }
     if (inField || !state.inRoom || state.ctrl.controlling) return;
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+      const drawingTile = [...tiles.values()].find((t) => t.el.classList.contains('drawing'));
+      if (drawingTile) {
+        e.preventDefault();
+        undoDraw(drawingTile.peerId);
+        return;
+      }
+    }
     if ((e.key === 't' || e.key === 'T') && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
       openQuickChat();

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, clipboard, shell, screen, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, clipboard, nativeImage, shell, screen, globalShortcut, Tray, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
@@ -214,6 +214,17 @@ ipcMain.handle('copy', (_e, text) => {
 
 ipcMain.handle('read-clipboard', () => {
   try { return clipboard.readText() || ''; } catch { return ''; }
+});
+
+ipcMain.handle('copy-image', (_e, dataUrl) => {
+  try {
+    const img = nativeImage.createFromDataURL(String(dataUrl || ''));
+    if (img.isEmpty()) return false;
+    clipboard.writeImage(img);
+    return true;
+  } catch {
+    return false;
+  }
 });
 
 /* ------------------------------------------------------------ áudio (AudioCap.exe) */

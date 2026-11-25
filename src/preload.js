@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('telinha', {
   startAudio: (opts) => ipcRenderer.invoke('audio-start', opts),
   stopAudio: () => ipcRenderer.invoke('audio-stop'),
   copy: (text) => ipcRenderer.invoke('copy', text),
+  copyImage: (dataUrl) => ipcRenderer.invoke('copy-image', dataUrl),
   readClipboard: () => ipcRenderer.invoke('read-clipboard'),
   onDeepLink: (cb) => {
     ipcRenderer.removeAllListeners('deep-link');

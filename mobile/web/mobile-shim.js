@@ -38,6 +38,15 @@
     async readClipboard() {
       try { return (await navigator.clipboard.readText()) || ''; } catch { return ''; }
     },
+    async copyImage(dataUrl) {
+      try {
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = 'telinha-print.png';
+        a.click();
+        return true;
+      } catch { return false; }
+    },
 
     async copy(text) {
       try {

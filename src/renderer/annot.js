@@ -14,6 +14,15 @@
 
   const ok = (v) => typeof v === 'number' && v >= -0.05 && v <= 1.05;
 
+  function distToSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 <= 1e-9) return Math.hypot(px - x1, py - y1);
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  }
+
   function wrapLines(g, text, maxW, maxLines) {
     const out = [];
     const pushLine = (line) => {
@@ -95,11 +104,12 @@
         const key = `${evt.from}:${evt.sid}`;
         let s = this.strokes.get(key);
         if (!s) {
-          if (this.strokes.size > 60) return;
+          if (this.strokes.size > 120) return;
           const w = [1, 2, 3].includes(evt.w) ? evt.w : 1;
-          s = { pts: [], color, w, t: now, done: false };
+          s = { id: String(evt.sid || key), pts: [], color, w, t: now, done: false, pin: !!evt.pin };
           this.strokes.set(key, s);
         }
+        if (evt.pin) s.pin = true;
         for (const p of Array.isArray(evt.pts) ? evt.pts.slice(0, 300) : []) {
           if (Array.isArray(p) && ok(p[0]) && ok(p[1]) && s.pts.length < 3000) s.pts.push([p[0], p[1]]);
         }
@@ -111,18 +121,26 @@
         s.t = now;
         if (evt.end) s.done = true;
       } else if (evt.type === 'shape') {
-        if (!['arrow', 'circle'].includes(evt.kind)) return;
+        if (!['arrow', 'circle', 'rect'].includes(evt.kind)) return;
         if (!ok(evt.x1) || !ok(evt.y1) || !ok(evt.x2) || !ok(evt.y2)) return;
         const w = [1, 2, 3].includes(evt.w) ? evt.w : 1;
-        const sh = { kind: evt.kind, x1: evt.x1, y1: evt.y1, x2: evt.x2, y2: evt.y2, color, w, t: now };
+        const id = String(evt.sid || `${evt.from}:${now}`);
+        const sh = { id, kind: evt.kind, x1: evt.x1, y1: evt.y1, x2: evt.x2, y2: evt.y2, color, w, t: now, pin: !!evt.pin };
         if (evt.preview) {
           this.previewShapes.set(evt.from, sh);
         } else {
           this.previewShapes.delete(evt.from);
-          if (this.shapes.length < 40) this.shapes.push(sh);
+          if (this.shapes.length < 80) this.shapes.push(sh);
         }
         const prev = this.lastPos.get(evt.from);
         this.lastPos.set(evt.from, { x: evt.x2, y: evt.y2, name: name || (prev && prev.name) || '', color: (prev && prev.color) || color, t: now, ctrl: false });
+      } else if (evt.type === 'erase') {
+        const targetId = String(evt.id || '');
+        if (!targetId) return;
+        for (const [k, s] of this.strokes) {
+          if (s.id === targetId || k === targetId) this.strokes.delete(k);
+        }
+        this.shapes = this.shapes.filter((sh) => sh.id !== targetId);
       } else if (evt.type === 'clear') {
         this.strokes.clear();
         this.shapes = [];
@@ -160,6 +178,39 @@
         this.chats.set(evt.from, cur);
       }
       this.kick();
+    }
+
+    hitTest(nx, ny, tol = 0.025) {
+      for (let i = this.shapes.length - 1; i >= 0; i--) {
+        const sh = this.shapes[i];
+        if (sh.kind === 'arrow') {
+          if (distToSegment(nx, ny, sh.x1, sh.y1, sh.x2, sh.y2) <= tol) return sh.id;
+        } else if (sh.kind === 'rect') {
+          const x1 = Math.min(sh.x1, sh.x2), x2 = Math.max(sh.x1, sh.x2);
+          const y1 = Math.min(sh.y1, sh.y2), y2 = Math.max(sh.y1, sh.y2);
+          if (distToSegment(nx, ny, x1, y1, x2, y1) <= tol
+            || distToSegment(nx, ny, x2, y1, x2, y2) <= tol
+            || distToSegment(nx, ny, x2, y2, x1, y2) <= tol
+            || distToSegment(nx, ny, x1, y2, x1, y1) <= tol) return sh.id;
+        } else if (sh.kind === 'circle') {
+          const cx = (sh.x1 + sh.x2) / 2, cy = (sh.y1 + sh.y2) / 2;
+          const rx = Math.max(0.01, Math.abs(sh.x2 - sh.x1) / 2);
+          const ry = Math.max(0.01, Math.abs(sh.y2 - sh.y1) / 2);
+          const normD = Math.hypot((nx - cx) / rx, (ny - cy) / ry);
+          const avgR = (rx + ry) / 2;
+          if (Math.abs(normD - 1) * avgR <= tol) return sh.id;
+        }
+      }
+      const entries = [...this.strokes.values()];
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const s = entries[i];
+        for (let j = 1; j < s.pts.length; j++) {
+          if (distToSegment(nx, ny, s.pts[j - 1][0], s.pts[j - 1][1], s.pts[j][0], s.pts[j][1]) <= tol) {
+            return s.id;
+          }
+        }
+      }
+      return null;
     }
 
     clear() {
@@ -203,14 +254,14 @@
 
       for (const [key, s] of this.strokes) {
         if (!s.done && now - s.t > 8000) s.done = true;
-        const age = s.done ? now - s.t : 0;
-        if (age > STROKE_HOLD + STROKE_FADE) {
+        const age = (!s.pin && s.done) ? now - s.t : 0;
+        if (!s.pin && age > STROKE_HOLD + STROKE_FADE) {
           this.strokes.delete(key);
           continue;
         }
-        alive = true;
+        if (!s.pin) alive = true;
         if (s.pts.length < 2) continue;
-        g.globalAlpha = age < STROKE_HOLD ? 1 : 1 - (age - STROKE_HOLD) / STROKE_FADE;
+        g.globalAlpha = s.pin || age < STROKE_HOLD ? 1 : 1 - (age - STROKE_HOLD) / STROKE_FADE;
         g.strokeStyle = s.color;
         g.lineWidth = Math.max(3, r.w / 380) * (s.w === 3 ? 2.6 : s.w === 2 ? 1.7 : 1);
         g.beginPath();
@@ -232,6 +283,10 @@
           g.beginPath();
           g.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
           g.stroke();
+        } else if (sh.kind === 'rect') {
+          g.beginPath();
+          g.roundRect(Math.min(x1, x2), Math.min(y1, y2), Math.max(4, Math.abs(x2 - x1)), Math.max(4, Math.abs(y2 - y1)), 4);
+          g.stroke();
         } else if (sh.kind === 'arrow') {
           const ang = Math.atan2(y2 - y1, x2 - x1);
           const head = Math.max(14, lw * 4.2);
@@ -246,6 +301,10 @@
         }
       };
       this.shapes = this.shapes.filter((sh) => {
+        if (sh.pin) {
+          drawShape(sh, 1);
+          return true;
+        }
         const age = now - sh.t;
         if (age > STROKE_HOLD + STROKE_FADE) return false;
         alive = true;
