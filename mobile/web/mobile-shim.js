@@ -88,6 +88,53 @@
       if (/^https:\/\//.test(target)) window.location.href = target;
       return { ok: true, openedBrowser: true };
     },
+
+    // Compartilhamento de tela nativo no Android (MediaProjection -> canvas.captureStream).
+    async mobileScreenStart(onStopped) {
+      const cap = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.ScreenShare;
+      if (!cap) throw new Error('Plugin de captura de tela indisponível.');
+      const res = await cap.start({ maxSide: 720, fps: 18, quality: 72 });
+      const canvas = document.createElement('canvas');
+      canvas.width = res.width || 720;
+      canvas.height = res.height || 1280;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#171210';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      let busy = false;
+      const frameHandle = await cap.addListener('frame', (ev) => {
+        if (busy || !ev || !ev.data) return;
+        busy = true;
+        const img = new Image();
+        img.onload = () => {
+          if (ev.width && ev.height && (canvas.width !== ev.width || canvas.height !== ev.height)) {
+            canvas.width = ev.width;
+            canvas.height = ev.height;
+          }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          busy = false;
+        };
+        img.onerror = () => { busy = false; };
+        img.src = ev.data;
+      });
+      const stopHandle = await cap.addListener('stopped', () => {
+        if (typeof onStopped === 'function') onStopped();
+      });
+
+      const stream = canvas.captureStream(18);
+      window.__mobileScreenCleanup = async () => {
+        try { await frameHandle.remove(); } catch {}
+        try { await stopHandle.remove(); } catch {}
+        try { await cap.stop(); } catch {}
+      };
+      return stream;
+    },
+
+    async mobileScreenStop() {
+      const fn = window.__mobileScreenCleanup;
+      window.__mobileScreenCleanup = null;
+      if (fn) await fn();
+    },
   };
 
   document.documentElement.classList.add('mobile');

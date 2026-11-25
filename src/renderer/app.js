@@ -1799,9 +1799,40 @@ async function switchScreen(sel) {
   toast('Compartilhamento trocado.');
 }
 
+async function startMobileScreen() {
+  if (!canShareMe()) {
+    toast('O host não permite que você compartilhe agora.', 'error');
+    return;
+  }
+  if (state.local.screen) return;
+  let stream;
+  try {
+    stream = await telinha.mobileScreenStart(() => {
+      if (state.local.screen) stopScreen();
+    });
+  } catch (e) {
+    toast((e && e.message) || 'Não consegui iniciar a captura da tela do celular.', 'error');
+    return;
+  }
+  if (!canShareMe() || !state.peer) {
+    for (const tr of stream.getTracks()) tr.stop();
+    if (telinha.mobileScreenStop) telinha.mobileScreenStop();
+    return;
+  }
+  state.screenSel = { sourceId: 'mobile:screen', audioMode: 'none', audioOn: false };
+  state.local.screen = stream;
+  addTile({ key: tileKey('me', 'screen'), kind: 'screen', local: true, stream, peerId: null });
+  broadcastSharing('screen');
+  for (const p of state.peers.values()) callPeer(p, 'screen');
+  updateControls();
+  updatePeopleUI();
+  toast('Compartilhando a tela do celular!');
+}
+
 function stopScreen() {
   const s = state.local.screen;
   if (!s) return;
+  if (telinha.mobileScreenStop) telinha.mobileScreenStop();
   revokeControl('Você parou de compartilhar; o controle acabou.', true);
   denyAllPending('Parou de compartilhar a tela.');
   state.local.screen = null;
@@ -3163,15 +3194,15 @@ function updateControls() {
   sb.querySelector('span').textContent = sharing ? 'Parar tela' : 'Compartilhar tela';
   sb.disabled = !sharing && !allowed;
   sb.title = why;
-  $('#switchBtn').classList.toggle('hidden', !sharing);
+  $('#switchBtn').classList.toggle('hidden', !sharing || IS_MOBILE);
   const ab = $('#annotBtn');
-  ab.classList.toggle('hidden', !sharing);
+  ab.classList.toggle('hidden', !sharing || IS_MOBILE);
   ab.classList.toggle('on', state.annotAllow);
   ab.title = state.annotAllow
     ? 'Os amigos podem apontar/desenhar na sua tela (clique pra desativar)'
     : 'Ninguém pode apontar na sua tela (clique pra permitir)';
   const ql = $('#qualityLive');
-  ql.classList.toggle('hidden', !sharing);
+  ql.classList.toggle('hidden', !sharing || IS_MOBILE);
   ql.value = state.quality;
 
   const cb = $('#camBtn');
@@ -3988,7 +4019,11 @@ async function init() {
       else toast(`Sala ${code} pronta! Digite seu nome e clique em Entrar.`);
     });
   }
-  $('#screenBtn').addEventListener('click', () => (state.local.screen ? stopScreen() : openPicker('start')));
+  $('#screenBtn').addEventListener('click', () => {
+    if (state.local.screen) stopScreen();
+    else if (IS_MOBILE && telinha.mobileScreenStart) withBusy($('#screenBtn'), 'Abrindo…', startMobileScreen);
+    else openPicker('start');
+  });
   $('#switchBtn').addEventListener('click', () => openPicker('switch'));
   $('#annotBtn').addEventListener('click', toggleAnnotAllow);
   $('#qualityLive').addEventListener('change', (e) => changeLiveQuality(e.target.value));
@@ -4006,7 +4041,7 @@ async function init() {
   });
   $('#chatBtn').classList.add('on');
   if (IS_MOBILE) {
-    $('#screenBtn').classList.add('hidden'); // compartilhar a tela do celular: próxima fase
+    if (!telinha.mobileScreenStart) $('#screenBtn').classList.add('hidden');
     if (window.innerWidth < 900) {
       $('#side').classList.add('collapsed');
       $('#chatBtn').classList.remove('on');

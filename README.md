@@ -29,7 +29,7 @@ Compartilhamento de tela e câmera entre amigos (até 6 pessoas), direto P2P via
 - Assistir tela e câmera, ligar a câmera do celular, chat, reações, foto, desenhar com o dedo.
 - **Controlar o PC pelo celular**: tocar = clique, segurar = botão direito, arrastar = arrastar, dois dedos = rolar,
   e o botão ⌨ abre o teclado (digita no PC, com acentos no padrão ABNT2).
-- Ainda não dá pra compartilhar a tela do celular (próxima fase).
+- **Compartilhar a tela do celular**: toque em **Compartilhar tela** e aceite a permissão do Android pra transmitir sua tela pra sala.
 
 ### Áudio da tela
 - **Som do PC, sem o Discord**: todo o som do PC menos o Discord (sem eco na call).
