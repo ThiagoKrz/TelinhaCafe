@@ -30,19 +30,21 @@ const DEAD_AFTER_MS = 12000;
 const DONATE_URL = 'https://livepix.gg/fatecafe';
 const REACTIONS = ['😂', '🔥', '👏', '😮', '❤️', '💀', '👀', '🎉'];
 
-// STUN pra descobrir o caminho direto. (O TURN público do PeerJS saiu do ar em 2026: redes que não
-// permitem conexão direta precisam de um TURN próprio, configurável em ⚙ Configurações → Conexão.)
-const DEFAULT_ICE = [
-  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
-];
-const BLOCKED_HELP = 'Dica: todos entrarem na mesma rede do Radmin VPN (ou ZeroTier/Tailscale) resolve na hora; ou o host configura um servidor TURN em ⚙ Configurações → Conexão.';
+const {
+  loadPref, savePref, loadJsonPref, saveJsonPref,
+  getClientId, cleanName, cleanAvatar, cmpVersion,
+  SCANCODES, charToKeys,
+  DEFAULT_ICE, BLOCKED_HELP, ANSWER_ICE_DELAY_MS,
+  flipFirst, iceFlag, answerWaits, cleanTurn,
+  cleanSignalServer, formatSignalServer, buildPeerOptions, backoffDelay,
+  collectPcStats, UploadHealthMonitor, runNetworkDiagnostic,
+} = window.TelinhaLib;
 
 // Quem bate primeiro numa conexão nova faz diferença: alguns roteadores/CGNAT trocam a porta de
 // saída quando recebem um pacote antes de ter mandado algum, e aí a conexão direta nunca fecha.
 // Quem tem esse roteador precisa mandar o primeiro pacote. Normalmente quem RESPONDE bate primeiro
 // (recebe tudo antes); se quem pede manda ice 'o', quem responde espera ANSWER_ICE_DELAY_MS.
 // O app tenta uma ordem, se não abrir tenta a outra, e lembra qual funcionou com cada pessoa.
-const ANSWER_ICE_DELAY_MS = 3000;
 (() => {
   const proto = RTCPeerConnection.prototype;
   const setRemote = proto.setRemoteDescription;
@@ -64,16 +66,6 @@ const ANSWER_ICE_DELAY_MS = 3000;
   };
 })();
 
-// Ordem com uma pessoa: 'me' = eu bato primeiro, 'them' = ela bate primeiro.
-const flipFirst = (first) => (first === 'me' ? 'them' : 'me');
-// Pedido que vai junto da conexão: 'o' = quem responde espera (eu, que peço, bato primeiro).
-const iceFlag = (first) => (first === 'me' ? 'o' : 'a');
-// Do lado de quem responde: espero? Sem pedido (versão antiga), uso o que já sei; senão espero.
-function answerWaits(md, known) {
-  if (md && md.ice === 'o') return true;
-  if (md && md.ice === 'a') return false;
-  return known ? known === 'them' : true;
-}
 // Ordem pra tentar primeiro com alguém novo: a que já precisou funcionar na minha rede.
 function firstGuess(p) {
   return (p && p.first) || state.iceHint || 'them';
@@ -131,7 +123,13 @@ const state = {
   ctrl: { granted: null, pending: [], asking: null, controlling: null, cooldown: new Map() },
   quality: loadPref('quality', '1080p60'),
   cameraId: loadPref('cameraId', ''),
-  turn: loadTurn(),
+  turn: loadJsonPref('turn', null, cleanTurn),
+  signalServer: loadJsonPref('signalServer', null, cleanSignalServer),
+  reconnectAttempt: 0,
+  reconnectTimer: null,
+  statsPrev: new WeakMap(),
+  uploadMonitor: new UploadHealthMonitor(),
+  lastTelemetry: [],
   focusKey: null,
   knownAtJoin: new Set(),
   heartbeat: null,
@@ -146,31 +144,6 @@ const volumes = new Map();     // peerId -> volume
 
 /* ---------------------------------------------------------------- util */
 
-function loadPref(key, def) {
-  try { return localStorage.getItem('telinha.' + key) ?? def; } catch { return def; }
-}
-function savePref(key, val) {
-  try { localStorage.setItem('telinha.' + key, val); } catch {}
-}
-function getClientId() {
-  let id = loadPref('clientId', '');
-  if (!/^[a-f0-9]{32}$/.test(id)) {
-    id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
-    savePref('clientId', id);
-  }
-  return id;
-}
-
-function cleanTurn(t) {
-  if (!t || typeof t !== 'object') return null;
-  const urls = String(t.urls || '').trim();
-  if (!/^turns?:[^\s]{3,200}$/.test(urls)) return null;
-  return { urls, username: String(t.username || '').slice(0, 200), credential: String(t.credential || '').slice(0, 200) };
-}
-function loadTurn() {
-  try { return cleanTurn(JSON.parse(loadPref('turn', 'null'))); } catch { return null; }
-}
-
 function iceServers() {
   const list = [...DEFAULT_ICE];
   if (state.turn) list.push(state.turn);
@@ -182,25 +155,6 @@ function iceServers() {
 function genCode() {
   const bytes = crypto.getRandomValues(new Uint8Array(6));
   return Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
-}
-
-function cleanName(n) {
-  const s = String(n || '').replace(/\s+/g, ' ').trim().slice(0, 24);
-  return s || 'Amigo';
-}
-
-function cleanAvatar(a) {
-  return typeof a === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(a) && a.length < 80000 ? a : '';
-}
-
-function cmpVersion(a, b) {
-  const pa = String(a).split('.').map(Number);
-  const pb = String(b).split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const d = (pa[i] || 0) - (pb[i] || 0);
-    if (d) return d;
-  }
-  return 0;
 }
 
 const PALETTE = ['#d4a373', '#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#0a84ff', '#bf5af2', '#ffffff', '#111111'];
@@ -527,7 +481,7 @@ function setAvatar(dataUrl) {
 
 function openPeer(id) {
   return new Promise((resolve, reject) => {
-    const opts = { debug: 1, config: { iceServers: iceServers() } };
+    const opts = buildPeerOptions(iceServers(), state.signalServer);
     const peer = id ? new PeerCtor(id, opts) : new PeerCtor(opts);
     const timer = setTimeout(() => {
       cleanup();
@@ -546,6 +500,22 @@ function openPeer(id) {
   });
 }
 
+function schedulePeerReconnect(peer) {
+  if (state.leaving || state.peer !== peer || peer.destroyed || !peer.disconnected) return;
+  if (state.reconnectTimer) return;
+  const delay = backoffDelay(state.reconnectAttempt, 1500, 15000);
+  state.reconnectAttempt += 1;
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    if (state.leaving || state.peer !== peer || peer.destroyed || !peer.disconnected) return;
+    try { peer.reconnect(); } catch {}
+    // Se continuar desconectado, agenda nova tentativa com backoff.
+    setTimeout(() => {
+      if (state.peer === peer && !peer.destroyed && peer.disconnected) schedulePeerReconnect(peer);
+    }, 3500);
+  }, delay);
+}
+
 function startSession(peer, code) {
   state.peer = peer;
   state.myId = peer.id;
@@ -555,6 +525,11 @@ function startSession(peer, code) {
   state.amHost = false;
   state.hostSig = null;
   state.room = null;
+  state.reconnectAttempt = 0;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+  state.uploadMonitor.reset();
+  state.lastTelemetry = [];
   state.door = { peer: null, owner: null, claiming: false, ownerLostAt: Date.now() };
   state.knownAtJoin.clear();
   state.hidden.clear();
@@ -562,12 +537,16 @@ function startSession(peer, code) {
 
   peer.on('connection', onIncomingConnection);
   peer.on('call', onIncomingCall);
+  peer.on('open', () => {
+    if (state.peer !== peer) return;
+    state.reconnectAttempt = 0;
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+  });
   peer.on('disconnected', () => {
-    // Caiu só o servidor de salas; as conexões P2P continuam.
+    // Caiu só o servidor de salas; as conexões P2P continuam enquanto reconecta com backoff.
     if (state.leaving || state.peer !== peer) return;
-    setTimeout(() => {
-      if (state.peer === peer && !peer.destroyed && peer.disconnected) peer.reconnect();
-    }, 2000);
+    schedulePeerReconnect(peer);
   });
   peer.on('error', (e) => {
     if (state.peer !== peer) return;
@@ -587,6 +566,11 @@ function startSession(peer, code) {
 function endSession() {
   clearInterval(state.heartbeat);
   state.heartbeat = null;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+  state.reconnectAttempt = 0;
+  state.uploadMonitor.reset();
+  state.lastTelemetry = [];
   releaseDoor();
   for (const id of [...state.peers.keys()]) removePeer(id, true);
   if (state.peer) {
@@ -877,6 +861,19 @@ function heartbeat() {
       removePeer(p.id);
       continue;
     }
+    // Se a conexão travou por mais de 6s, tenta recuperar silenciosamente (ICE restart / reconexão).
+    if (p.ready && now - p.lastSeen > 6000 && !p.recovering) {
+      p.recovering = true;
+      for (const kind of ['screen', 'camera']) {
+        const pc = p.out[kind] && p.out[kind].peerConnection;
+        if (pc && typeof pc.restartIce === 'function') { try { pc.restartIce(); } catch {} }
+      }
+      if (state.peer && !state.peer.disconnected && state.myId < p.id) {
+        connectTo(p.id, p.name, true, p.first, false);
+      }
+    } else if (p.ready && now - p.lastSeen <= 4000) {
+      p.recovering = false;
+    }
     if (!p.ready && now - p.createdAt > CONNECT_TIMEOUT_MS) {
       if (p.outgoing && !state.leaving) {
         addSystem(`Não consegui conectar com ${p.name && p.name !== '…' ? p.name : 'uma pessoa da sala'}. A rede de um de vocês está bloqueando a conexão direta. ${BLOCKED_HELP}`);
@@ -890,6 +887,64 @@ function heartbeat() {
   state.beat = (state.beat || 0) + 1;
   if (state.inRoom && state.beat % 3 === 0) for (const p of state.peers.values()) if (p.helloed) send(p, peersMsg(p.id));
   doorCheck();
+  pollTelemetry();
+}
+
+async function pollTelemetry() {
+  if (!state.inRoom || state.leaving) return;
+  const rows = [];
+  const outScreen = [];
+  for (const p of state.peers.values()) {
+    for (const kind of ['screen', 'camera']) {
+      for (const dir of ['out', 'in']) {
+        const call = p[dir] && p[dir][kind];
+        const pc = call && call.peerConnection;
+        if (!pc) continue;
+        const st = await collectPcStats(pc, state.statsPrev.get(pc));
+        if (!st) continue;
+        state.statsPrev.set(pc, st.snapshot);
+        rows.push({ peer: p.name, kind, dir, ...st });
+        if (dir === 'out' && kind === 'screen') outScreen.push(st);
+      }
+    }
+  }
+  state.lastTelemetry = rows;
+  const alert = state.uploadMonitor.sample(outScreen);
+  if (alert && (state.quality === '1080p60' || state.quality === 'max60')) {
+    toast(`Seu upload está no limite (~${alert.avgKbps} kbps). Se travar pros amigos, tente baixar a qualidade no seletor lá em cima.`);
+  }
+  const telBox = document.getElementById('telemetryLive');
+  if (telBox && !$('#settings').classList.contains('hidden')) renderTelemetryTable(telBox);
+}
+
+function renderTelemetryTable(el) {
+  el.innerHTML = '';
+  if (!state.lastTelemetry.length) {
+    const p = document.createElement('small');
+    p.className = 'muted';
+    p.textContent = 'Nenhum vídeo ativo no momento.';
+    el.appendChild(p);
+    return;
+  }
+  for (const r of state.lastTelemetry) {
+    const line = document.createElement('div');
+    line.className = 'tel-row';
+    const arrow = r.dir === 'out' ? '↑' : '↓';
+    const what = r.kind === 'screen' ? 'tela' : 'câm';
+    const res = r.height ? `${r.height}p${r.fps ? '@' + r.fps : ''}` : '';
+    const bits = [
+      `${arrow} ${r.peer} (${what})`,
+      res,
+      r.kbps ? `${r.kbps} kbps` : '',
+      r.codec,
+      r.lossPct > 0 ? `perda ${r.lossPct}%` : '',
+      r.rttMs != null ? `${r.rttMs} ms` : '',
+      r.route,
+      r.limitedBy !== 'none' ? `limite: ${r.limitedBy}` : '',
+    ].filter(Boolean);
+    line.textContent = bits.join(' · ');
+    el.appendChild(line);
+  }
 }
 
 function send(p, msg) {
@@ -1423,6 +1478,15 @@ function callPeer(p, kind, retry = true, first = undefined) {
         applySenderParams(pc, kind);
         p.first = order;
         if (!retry) learnFirst(order);
+      }
+      if (pc.connectionState === 'disconnected' && p.out[kind] === call && state.peers.has(p.id)) {
+        // Rede piscou: tenta ICE restart silencioso antes de derrubar.
+        setTimeout(() => {
+          if (p.out[kind] === call && state.peers.has(p.id) && pc.connectionState === 'disconnected') {
+            if (typeof pc.restartIce === 'function') { try { pc.restartIce(); } catch {} }
+            else callPeer(p, kind, false, order);
+          }
+        }, 3500);
       }
       if (pc.connectionState === 'failed' && p.out[kind] === call && state.peers.has(p.id)) {
         // Tenta uma vez de novo (na outra ordem) antes de avisar.
@@ -2076,30 +2140,6 @@ async function updateOverlay() {
 
 /* ---------------------------------------------------------------- controle remoto */
 
-// Teclas permitidas (KeyboardEvent.code -> [scancode, estendida]). Posicional: funciona com
-// qualquer layout (ABNT2 incluso). A tecla Windows fica de fora de propósito.
-const SCANCODES = (() => {
-  const m = {};
-  const row = (codes, start) => codes.forEach((c, i) => { m[c] = [start + i, 0]; });
-  row(['KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP', 'BracketLeft', 'BracketRight'], 0x10);
-  row(['KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyG', 'KeyH', 'KeyJ', 'KeyK', 'KeyL', 'Semicolon', 'Quote', 'Backquote'], 0x1e);
-  row(['KeyZ', 'KeyX', 'KeyC', 'KeyV', 'KeyB', 'KeyN', 'KeyM', 'Comma', 'Period', 'Slash'], 0x2c);
-  row(['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0', 'Minus', 'Equal', 'Backspace', 'Tab'], 0x02);
-  row(['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10'], 0x3b);
-  Object.assign(m, {
-    Escape: [0x01, 0], Enter: [0x1c, 0], ControlLeft: [0x1d, 0], ShiftLeft: [0x2a, 0], Backslash: [0x2b, 0],
-    ShiftRight: [0x36, 0], NumpadMultiply: [0x37, 0], AltLeft: [0x38, 0], Space: [0x39, 0], CapsLock: [0x3a, 0],
-    NumLock: [0x45, 0], ScrollLock: [0x46, 0], Numpad7: [0x47, 0], Numpad8: [0x48, 0], Numpad9: [0x49, 0],
-    NumpadSubtract: [0x4a, 0], Numpad4: [0x4b, 0], Numpad5: [0x4c, 0], Numpad6: [0x4d, 0], NumpadAdd: [0x4e, 0],
-    Numpad1: [0x4f, 0], Numpad2: [0x50, 0], Numpad3: [0x51, 0], Numpad0: [0x52, 0], NumpadDecimal: [0x53, 0],
-    IntlBackslash: [0x56, 0], F11: [0x57, 0], F12: [0x58, 0], IntlRo: [0x73, 0], NumpadComma: [0x7e, 0],
-    NumpadEnter: [0x1c, 1], ControlRight: [0x1d, 1], NumpadDivide: [0x35, 1], AltRight: [0x38, 1],
-    Home: [0x47, 1], ArrowUp: [0x48, 1], PageUp: [0x49, 1], ArrowLeft: [0x4b, 1], ArrowRight: [0x4d, 1],
-    End: [0x4f, 1], ArrowDown: [0x50, 1], PageDown: [0x51, 1], Insert: [0x52, 1], Delete: [0x53, 1], ContextMenu: [0x5d, 1],
-  });
-  return m;
-})();
-
 // ---- dono da tela ----
 
 function onCtrlRequest(p) {
@@ -2327,39 +2367,6 @@ function updateCtrlButtons() {
       : state.ctrl.asking === t.peerId ? 'Esperando a pessoa aceitar…'
       : 'Pedir pra controlar essa tela (mouse e teclado)';
   }
-}
-
-// Texto digitado no teclado do celular -> teclas no PC. Os códigos são posicionais, então a
-// tabela segue o layout ABNT2 (o mais comum no Brasil); acentos viram tecla morta + letra.
-const ABNT2_CHARS = (() => {
-  const m = {};
-  for (let c = 97; c <= 122; c++) {
-    const ch = String.fromCharCode(c);
-    m[ch] = [['Key' + ch.toUpperCase(), false]];
-    m[ch.toUpperCase()] = [['Key' + ch.toUpperCase(), true]];
-  }
-  for (let d = 0; d <= 9; d++) m[String(d)] = [['Digit' + d, false]];
-  const put = (ch, code, shift = false) => { m[ch] = [[code, shift]]; };
-  put(' ', 'Space'); put('\n', 'Enter');
-  put('!', 'Digit1', true); put('@', 'Digit2', true); put('#', 'Digit3', true); put('$', 'Digit4', true);
-  put('%', 'Digit5', true); put('&', 'Digit7', true); put('*', 'Digit8', true); put('(', 'Digit9', true); put(')', 'Digit0', true);
-  put('-', 'Minus'); put('_', 'Minus', true); put('=', 'Equal'); put('+', 'Equal', true);
-  put(',', 'Comma'); put('<', 'Comma', true); put('.', 'Period'); put('>', 'Period', true);
-  put(';', 'Slash'); put(':', 'Slash', true); put('/', 'IntlRo'); put('?', 'IntlRo', true);
-  put("'", 'Backquote'); put('"', 'Backquote', true);
-  put('ç', 'Semicolon'); put('Ç', 'Semicolon', true);
-  put('[', 'BracketRight'); put('{', 'BracketRight', true); put(']', 'Backslash'); put('}', 'Backslash', true);
-  put('\\', 'IntlBackslash'); put('|', 'IntlBackslash', true);
-  return m;
-})();
-// Tecla morta de cada acento no ABNT2: ´ ` ~ ^ ¨
-const ABNT2_DEAD = { '́': ['BracketLeft', false], '̀': ['BracketLeft', true], '̃': ['Quote', false], '̂': ['Quote', true], '̈': ['Digit6', true] };
-
-function charToKeys(ch) {
-  if (ABNT2_CHARS[ch]) return ABNT2_CHARS[ch];
-  const [base, mark] = ch.normalize('NFD');
-  if (mark && ABNT2_DEAD[mark] && ABNT2_CHARS[base]) return [ABNT2_DEAD[mark], ...ABNT2_CHARS[base]];
-  return null;
 }
 
 function tapKey(p, code, shift = false) {
@@ -3286,13 +3293,23 @@ function renderSettings() {
   }
   body.appendChild(rules);
 
+  // Avançado (discreto: colapsado por padrão para não poluir pro usuário comum)
+  const adv = document.createElement('details');
+  adv.className = 'adv-box';
+  const sum = document.createElement('summary');
+  sum.textContent = 'Avançado (rede, diagnóstico e telemetria)';
+  adv.appendChild(sum);
+
+  const advInner = document.createElement('div');
+  advInner.className = 'adv-inner';
+
   // Conexão (TURN)
-  const net = settingsSection('Conexão');
+  const net = settingsSection('Servidor TURN');
   const help = document.createElement('small');
   help.className = 'muted';
   help.textContent = state.amHost
-    ? 'Se algum amigo não conseguir conectar (rede muito fechada), coloque aqui um servidor TURN (ex.: conta grátis na Metered ou Cloudflare). Como você é o host, ele é repassado pra todo mundo da sala.'
-    : 'Se você não conseguir conectar com alguém (rede muito fechada), coloque aqui um servidor TURN (ex.: conta grátis na Metered ou Cloudflare).';
+    ? 'Se algum amigo não conseguir conectar (rede muito fechada), coloque aqui um servidor TURN (ex.: conta grátis na Cloudflare ou Metered). Como você é o host, ele é repassado pra todo mundo da sala.'
+    : 'Se você não conseguir conectar com alguém (rede muito fechada), coloque aqui um servidor TURN (ex.: conta grátis na Cloudflare ou Metered).';
   net.appendChild(help);
   const mk = (ph, val, type = 'text') => {
     const i = document.createElement('input');
@@ -3319,7 +3336,7 @@ function renderSettings() {
       return;
     }
     state.turn = t;
-    savePref('turn', JSON.stringify(t));
+    saveJsonPref('turn', t);
     if (state.amHost) updateRoom((r) => { r.turn = t; });
     else applyRoomEffects();
     toast(t ? 'Servidor TURN salvo. Vale pras próximas conexões.' : 'Servidor TURN removido.');
@@ -3332,7 +3349,77 @@ function renderSettings() {
     info.textContent = 'O host configurou um servidor TURN pra esta sala; ele já está sendo usado.';
     net.appendChild(info);
   }
-  body.appendChild(net);
+  advInner.appendChild(net);
+
+  // Servidor de sinalização (PeerJS)
+  const sig = settingsSection('Servidor de sinalização (backup)');
+  const sigHelp = document.createElement('small');
+  sigHelp.className = 'muted';
+  sigHelp.textContent = 'Deixe vazio pra usar o padrão (0.peerjs.com). Se mudar, todo mundo da sala precisa usar o mesmo endereço.';
+  sig.appendChild(sigHelp);
+  const sigRow = document.createElement('div');
+  sigRow.className = 'sig-row';
+  const sigIn = mk('https://meu-peerjs.exemplo.com', formatSignalServer(state.signalServer));
+  const sigSave = document.createElement('button');
+  sigSave.className = 'btn';
+  sigSave.textContent = 'Salvar';
+  sigSave.addEventListener('click', () => {
+    const raw = sigIn.value.trim();
+    const parsed = raw ? cleanSignalServer(raw) : null;
+    if (raw && !parsed) {
+      toast('Endereço inválido. Ex.: https://meu-peerjs.exemplo.com', 'error');
+      return;
+    }
+    state.signalServer = parsed;
+    saveJsonPref('signalServer', parsed);
+    toast(parsed ? `Servidor de sinalização salvo (${parsed.host}). Vale na próxima sala.` : 'Voltando pro servidor padrão (0.peerjs.com).');
+  });
+  sigRow.append(sigIn, sigSave);
+  sig.appendChild(sigRow);
+  advInner.appendChild(sig);
+
+  // Diagnóstico de rede integrado
+  const diag = settingsSection('Diagnóstico de rede');
+  const diagBtn = document.createElement('button');
+  diagBtn.className = 'btn small';
+  diagBtn.textContent = 'Testar minha rede';
+  const diagOut = document.createElement('div');
+  diagOut.className = 'diag-out hidden';
+  diagBtn.addEventListener('click', async () => {
+    diagBtn.disabled = true;
+    diagOut.className = 'diag-out';
+    diagOut.textContent = 'Iniciando teste…';
+    try {
+      const res = await runNetworkDiagnostic({
+        iceServers: iceServers(),
+        signalServer: state.signalServer,
+        onStep: (m) => { diagOut.textContent = m; },
+      });
+      diagOut.className = 'diag-out ' + res.tone;
+      const sigTxt = res.signal.ok ? `OK (${res.signal.ms} ms)` : `falhou (${res.signal.error || 'erro'})`;
+      const turnTxt = res.turn ? (res.turn.ok ? 'OK (relay ativo)' : 'não respondeu') : 'não configurado';
+      diagOut.textContent = `Sinalização (${res.signal.host}): ${sigTxt}\nNAT: ${res.nat}\nTURN: ${turnTxt}\n\n${res.summary}`;
+    } catch (e) {
+      diagOut.className = 'diag-out bad';
+      diagOut.textContent = 'Erro no diagnóstico: ' + (e && e.message || e);
+    } finally {
+      diagBtn.disabled = false;
+    }
+  });
+  diag.append(diagBtn, diagOut);
+  advInner.appendChild(diag);
+
+  // Telemetria WebRTC ao vivo
+  const tel = settingsSection('Telemetria ao vivo (WebRTC)');
+  const telLive = document.createElement('div');
+  telLive.id = 'telemetryLive';
+  telLive.className = 'tel-list';
+  renderTelemetryTable(telLive);
+  tel.appendChild(telLive);
+  advInner.appendChild(tel);
+
+  adv.appendChild(advInner);
+  body.appendChild(adv);
 
   // Sobre
   const about = settingsSection('Sobre');
@@ -3653,6 +3740,12 @@ async function init() {
     }
   });
 
+  window.addEventListener('online', () => {
+    if (state.peer && !state.leaving && state.peer.disconnected) {
+      state.reconnectAttempt = 0;
+      schedulePeerReconnect(state.peer);
+    }
+  });
   window.addEventListener('beforeunload', () => {
     if (state.peer) {
       releaseDoor();

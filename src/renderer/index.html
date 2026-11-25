@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' https://*.peerjs.com wss://*.peerjs.com blob:; worker-src 'self' blob:">
+        content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' https: wss: blob:; worker-src 'self' blob:">
   <title>Telinha Café</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -225,6 +225,11 @@
 <div id="toasts" aria-live="polite"></div>
 
 <script src="../../node_modules/peerjs/dist/peerjs.min.js"></script>
+<script src="lib/prefs.js"></script>
+<script src="lib/keymap.js"></script>
+<script src="lib/net.js"></script>
+<script src="lib/stats.js"></script>
+<script src="lib/net-diag.js"></script>
 <script src="annot.js"></script>
 <script src="app.js"></script>
 </body>
