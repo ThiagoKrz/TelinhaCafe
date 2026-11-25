@@ -30,11 +30,62 @@ const DEAD_AFTER_MS = 12000;
 const DONATE_URL = 'https://livepix.gg/fatecafe';
 const REACTIONS = ['😂', '🔥', '👏', '😮', '❤️', '💀', '👀', '🎉'];
 
-// STUN pra descobrir o caminho direto + TURN público do PeerJS de reserva.
+// STUN pra descobrir o caminho direto. (O TURN público do PeerJS saiu do ar em 2026: redes que não
+// permitem conexão direta precisam de um TURN próprio, configurável em ⚙ Configurações → Conexão.)
 const DEFAULT_ICE = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
-  { urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp' },
 ];
+const BLOCKED_HELP = 'Dica: todos entrarem na mesma rede do Radmin VPN (ou ZeroTier/Tailscale) resolve na hora; ou o host configura um servidor TURN em ⚙ Configurações → Conexão.';
+
+// Quem bate primeiro numa conexão nova faz diferença: alguns roteadores/CGNAT trocam a porta de
+// saída quando recebem um pacote antes de ter mandado algum, e aí a conexão direta nunca fecha.
+// Quem tem esse roteador precisa mandar o primeiro pacote. Normalmente quem RESPONDE bate primeiro
+// (recebe tudo antes); se quem pede manda ice 'o', quem responde espera ANSWER_ICE_DELAY_MS.
+// O app tenta uma ordem, se não abrir tenta a outra, e lembra qual funcionou com cada pessoa.
+const ANSWER_ICE_DELAY_MS = 3000;
+(() => {
+  const proto = RTCPeerConnection.prototype;
+  const setRemote = proto.setRemoteDescription;
+  const addCandidate = proto.addIceCandidate;
+  proto.setRemoteDescription = function (desc, ...rest) {
+    if (desc && desc.type === 'offer' && !this.__answeredAt) this.__answeredAt = performance.now();
+    return setRemote.call(this, desc, ...rest);
+  };
+  proto.addIceCandidate = function (...args) {
+    // __iceWait é marcado logo depois de responder (no mesmo passo); por isso decide num microtask.
+    return Promise.resolve().then(() => {
+      const wait = this.__iceWait && this.__answeredAt ? this.__answeredAt + ANSWER_ICE_DELAY_MS - performance.now() : 0;
+      if (wait <= 0) return addCandidate.apply(this, args);
+      return new Promise((r) => setTimeout(r, wait)).then(() => {
+        if (this.signalingState === 'closed') return undefined;
+        return addCandidate.apply(this, args);
+      });
+    });
+  };
+})();
+
+// Ordem com uma pessoa: 'me' = eu bato primeiro, 'them' = ela bate primeiro.
+const flipFirst = (first) => (first === 'me' ? 'them' : 'me');
+// Pedido que vai junto da conexão: 'o' = quem responde espera (eu, que peço, bato primeiro).
+const iceFlag = (first) => (first === 'me' ? 'o' : 'a');
+// Do lado de quem responde: espero? Sem pedido (versão antiga), uso o que já sei; senão espero.
+function answerWaits(md, known) {
+  if (md && md.ice === 'o') return true;
+  if (md && md.ice === 'a') return false;
+  return known ? known === 'them' : true;
+}
+// Ordem pra tentar primeiro com alguém novo: a que já precisou funcionar na minha rede.
+function firstGuess(p) {
+  return (p && p.first) || state.iceHint || 'them';
+}
+function learnFirst(first) {
+  if (state.iceHint === first) return;
+  state.iceHint = first;
+  savePref('iceFirst', first);
+}
+function markAnswer(pc, wait) {
+  if (pc) pc.__iceWait = wait;
+}
 
 const QUALITY = {
   '720p30':  { label: '720p · 30 fps',               w: 1280, h: 720,  fps: 30, kbps: 2500 },
@@ -54,6 +105,7 @@ const state = {
   name: '',
   avatar: loadPref('avatar', ''),
   clientId: getClientId(),
+  iceHint: ['me', 'them'].includes(loadPref('iceFirst', '')) ? loadPref('iceFirst', '') : null,
   code: '',
   peer: null,                  // peer pessoal
   myId: '',
@@ -522,7 +574,7 @@ function startSession(peer, code) {
     if (state.join) {
       const isDoor = e.type === 'peer-unavailable' && String(e.message).includes(DOOR_PREFIX + state.code);
       state.join.reject(isDoor
-        ? Object.assign(new Error('Sala não encontrada. Confira o código (e se vocês estão com a mesma versão do Telinha Café).'), { code: 'no-room' })
+        ? Object.assign(new Error('Sala não encontrada. Confira o código.'), { code: 'no-room' })
         : new Error(describePeerError(e)));
       return;
     }
@@ -595,7 +647,7 @@ async function joinRoom() {
     const keys = hostKeyFor(code);
     let message = 'Você entrou na sala.';
     try {
-      await doorJoin(keys);
+      await doorJoinChecked(keys);
     } catch (e) {
       if (e.code !== 'no-room') throw e;
       let reopened = false;
@@ -617,7 +669,7 @@ async function joinRoom() {
         // Pode ser a porta trocando de dono; tenta de novo antes de desistir.
         setHomeStatus('Procurando a sala…');
         await sleep(2500);
-        await doorJoin(keys);
+        await doorJoinChecked(keys);
       }
     }
     if (keys && samePub(keys.pub, state.room.hostPub)) {
@@ -635,19 +687,55 @@ async function joinRoom() {
   }
 }
 
+// A porta da sala existe? Tenta pegar o código dela por um instante: se já estiver ocupado,
+// alguém está segurando (a sala existe); se conseguir, solta na hora (a sala não existe).
+async function doorExists() {
+  try {
+    const probe = await openPeer(DOOR_PREFIX + state.code);
+    probe.destroy();
+    return false;
+  } catch (e) {
+    if (e.type === 'unavailable-id') return true;
+    throw e;
+  }
+}
+
+// doorJoin + diagnóstico: diferencia "sala não existe" de "a rede bloqueou a conexão".
+// Tenta na ordem que costuma funcionar na minha rede; se a porta não abrir, tenta na outra.
+async function doorJoinChecked(keys) {
+  const first = state.iceHint || 'them';
+  try {
+    return await doorJoin(keys, first, first === 'me' ? 7000 : 4500);
+  } catch (e) {
+    if (e.code !== 'no-open') throw e;
+  }
+  setHomeStatus('Tentando outro caminho…');
+  try {
+    await doorJoin(keys, flipFirst(first), 8000);
+    learnFirst(flipFirst(first));
+  } catch (e) {
+    if (e.code !== 'no-open') throw e;
+    setHomeStatus('Conferindo a sala…');
+    if (await doorExists()) {
+      throw Object.assign(new Error(`A sala ${state.code} existe, mas a sua rede e a de quem está nela não conseguiram se conectar (bloqueio do provedor). ${BLOCKED_HELP}`), { code: 'blocked' });
+    }
+    throw Object.assign(new Error('Sala não encontrada. Confira o código.'), { code: 'no-room' });
+  }
+}
+
 // Bate na porta da sala e recebe a lista de membros + regras.
-function doorJoin(keys) {
+function doorJoin(keys, first, openMs) {
   return new Promise(async (resolve, reject) => {
     const hostSig = keys ? await signHost(keys.priv, state.code, state.myId) : undefined;
     state.hostSig = hostSig || null;
     const conn = state.peer.connect(DOOR_PREFIX + state.code, {
       reliable: true,
       serialization: 'json',
-      metadata: { room: state.code, v: PROTO, version: state.appVersion, clientId: state.clientId, hostSig },
+      metadata: { room: state.code, v: PROTO, version: state.appVersion, clientId: state.clientId, hostSig, ice: iceFlag(first) },
     });
-    const noRoom = () => Object.assign(new Error('Sala não encontrada. Confira o código (e se vocês estão com a mesma versão do Telinha Café).'), { code: 'no-room' });
-    // Se a conexão com a porta nem abre, ninguém está segurando ela (sala vazia ou código errado).
-    const openTimer = setTimeout(() => done(reject, noRoom()), 8000);
+    // A conexão com a porta não abriu: ou a sala não existe, ou a rede bloqueou. Quem chamou confere qual foi.
+    const noOpen = () => Object.assign(new Error('A conexão com a sala não abriu.'), { code: 'no-open' });
+    const openTimer = setTimeout(() => done(reject, noOpen()), openMs);
     const done = (fn, arg) => {
       if (!state.join || state.join.conn !== conn) return;
       clearTimeout(state.join.timer);
@@ -673,7 +761,8 @@ function doorJoin(keys) {
         for (const m of Array.isArray(d.members) ? d.members : []) {
           if (m && typeof m.id === 'string') {
             state.knownAtJoin.add(m.id);
-            connectTo(m.id, typeof m.name === 'string' ? cleanName(m.name) : null);
+            // Quem segura a porta está na mesma rede dela: começa pela ordem que abriu a porta.
+            connectTo(m.id, typeof m.name === 'string' ? cleanName(m.name) : null, false, m.id === d.doorOwner ? first : undefined);
           }
         }
         done(resolve);
@@ -736,6 +825,7 @@ function onDoorConnection(conn) {
     conn.close();
     return;
   }
+  markAnswer(conn.peerConnection, answerWaits(md, null));
   conn.on('open', async () => {
     const room = state.room;
     if (!room) return conn.close();
@@ -789,7 +879,7 @@ function heartbeat() {
     }
     if (!p.ready && now - p.createdAt > CONNECT_TIMEOUT_MS) {
       if (p.outgoing && !state.leaving) {
-        addSystem(`Não consegui conectar com ${p.name && p.name !== '…' ? p.name : 'uma pessoa da sala'}. A rede de um de vocês pode estar bloqueando; tente outra rede ou configure um servidor TURN nas configurações.`);
+        addSystem(`Não consegui conectar com ${p.name && p.name !== '…' ? p.name : 'uma pessoa da sala'}. A rede de um de vocês está bloqueando a conexão direta. ${BLOCKED_HELP}`);
       }
       removePeer(p.id, true);
       continue;
@@ -845,19 +935,30 @@ function broadcastSharing(kind) {
   broadcast({ t: 'sharing', kind, info: sharingInfo(kind) });
 }
 
-function connectTo(id, name, quiet = false) {
+function connectTo(id, name, quiet = false, first = undefined, retry = true) {
   if (!state.peer || typeof id !== 'string' || id === state.myId) return;
   const existing = state.peers.get(id);
   if (existing && existing.conn && existing.conn.open) return;
+  const order = first || firstGuess(existing);
   const conn = state.peer.connect(id, {
     reliable: true,
     serialization: 'json',
-    metadata: { room: state.code, v: PROTO },
+    metadata: { room: state.code, v: PROTO, ice: iceFlag(order), r: retry ? undefined : 1 },
   });
   if (conn) {
+    conn.__first = order;
+    conn.__retried = !retry;
     const p = registerConn(conn);
     p.outgoing = !quiet;
     if (name && p.name === '…') p.name = name;
+    // Não abriu: tenta uma vez na ordem inversa (quem bate primeiro).
+    if (retry) {
+      setTimeout(() => {
+        if (state.peers.get(id) === p && p.conn === conn && !conn.open && !state.leaving) {
+          connectTo(id, null, quiet, flipFirst(order), false);
+        }
+      }, order === 'me' ? 7000 : 4500);
+    }
   }
 }
 
@@ -867,6 +968,11 @@ function onIncomingConnection(conn) {
     conn.close();
     return;
   }
+  const known = state.peers.get(conn.peer);
+  const wait = answerWaits(md, known && known.first);
+  markAnswer(conn.peerConnection, wait);
+  conn.__first = wait ? 'them' : 'me';
+  conn.__retried = !!md.r;
   registerConn(conn);
 }
 
@@ -895,6 +1001,11 @@ function registerConn(conn) {
   conn.on('open', () => {
     if (p.conn !== conn) return;
     p.ready = true;
+    // Essa ordem funcionou com essa pessoa; se precisou da segunda tentativa, vale pra minha rede.
+    if (conn.__first) {
+      p.first = conn.__first;
+      if (conn.__retried) learnFirst(conn.__first);
+    }
     p.lastSeen = Date.now();
     send(p, helloMsg());
     for (const kind of ['screen', 'camera']) if (state.local[kind]) callPeer(p, kind);
@@ -1292,12 +1403,13 @@ function applySenderParams(pc, kind) {
   }
 }
 
-function callPeer(p, kind, retry = true) {
+function callPeer(p, kind, retry = true, first = undefined) {
   const stream = state.local[kind];
   if (!stream || !p.ready || !state.peer || p.unsub[kind]) return;
   if (p.out[kind]) { try { p.out[kind].close(); } catch {} }
+  const order = first || firstGuess(p);
   const call = state.peer.call(p.id, stream, {
-    metadata: { room: state.code, kind, kbps: kbpsFor(kind) },
+    metadata: { room: state.code, kind, kbps: kbpsFor(kind), ice: iceFlag(order), r: retry ? undefined : 1 },
     sdpTransform: makeSdpTransform(kbpsFor(kind)),
   });
   if (!call) return;
@@ -1305,13 +1417,25 @@ function callPeer(p, kind, retry = true) {
   const pc = call.peerConnection;
   if (pc) {
     pc.addEventListener('connectionstatechange', () => {
-      if (pc.connectionState === 'connected') applySenderParams(pc, kind);
+      if (pc.connectionState === 'connected') {
+        applySenderParams(pc, kind);
+        p.first = order;
+        if (!retry) learnFirst(order);
+      }
       if (pc.connectionState === 'failed' && p.out[kind] === call && state.peers.has(p.id)) {
-        // Tenta uma vez de novo antes de avisar.
-        if (retry) setTimeout(() => callPeer(p, kind, false), 1500);
-        else toast(`A conexão de vídeo com ${p.name} falhou. A rede de um de vocês pode estar bloqueando.`, 'error');
+        // Tenta uma vez de novo (na outra ordem) antes de avisar.
+        if (retry) setTimeout(() => callPeer(p, kind, false, flipFirst(order)), 1500);
+        else toast(`A conexão de vídeo com ${p.name} falhou: a rede de um de vocês está bloqueando. ${BLOCKED_HELP}`, 'error');
       }
     });
+    // Não conectou logo: tenta na ordem inversa sem esperar o "failed" (que demora ~30s).
+    if (retry) {
+      setTimeout(() => {
+        if (p.out[kind] === call && state.peers.has(p.id) && state.local[kind] && pc.connectionState !== 'connected') {
+          callPeer(p, kind, false, flipFirst(order));
+        }
+      }, order === 'me' ? 8000 : 5500);
+    }
   }
   call.on('close', () => { if (p.out[kind] === call) delete p.out[kind]; });
   call.on('error', (e) => console.warn('call error', e));
@@ -1355,6 +1479,16 @@ async function onIncomingCall(call) {
   call.on('error', (e) => console.warn('incoming call error', e));
   const kbps = Math.min(MAX_KBPS, Math.max(300, Number(md.kbps) || CAMERA_KBPS));
   call.answer(undefined, { sdpTransform: makeSdpTransform(kbps) });
+  const wait = answerWaits(md, p.first);
+  const pc = call.peerConnection;
+  markAnswer(pc, wait);
+  if (pc) {
+    pc.addEventListener('connectionstatechange', () => {
+      if (pc.connectionState !== 'connected') return;
+      p.first = wait ? 'them' : 'me';
+      if (md.r) learnFirst(p.first);
+    });
+  }
 }
 
 function closeIncoming(p, kind) {

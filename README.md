@@ -74,10 +74,9 @@ As duas primeiras precisam de Windows 11 ou Windows 10 atualizado; se não der, 
 
 ## Rede
 - A sala usa o servidor público gratuito do PeerJS só pra trocar o código/conexão; o vídeo vai direto entre vocês.
-- Se a rede de alguém não deixar conexão direta, o app tenta um servidor de retransmissão (TURN) público de reserva
-  e mostra a etiqueta "via servidor". Se mesmo assim não conectar, aparece um aviso no chat.
+- Se a rede de alguém bloquear conexão direta (CGNAT/roteador rígido), o app tenta automaticamente inverter quem inicia a conexão. Se mesmo assim não conectar, aparece um aviso sugerindo entrar na mesma rede pelo Radmin VPN / ZeroTier / Tailscale ou configurar um servidor TURN próprio.
 - Em ⚙ Configurações → Conexão dá pra colocar um servidor TURN próprio (ex.: conta grátis na Metered ou Cloudflare);
-  se o host colocar, ele é repassado pra todo mundo da sala.
+  se o host colocar, ele é repassado pra todo mundo da sala. Quando conectado via TURN, aparece a etiqueta "via servidor".
 - Upload: cada pessoa assistindo consome o bitrate da qualidade escolhida (ex.: 1080p60 ≈ 8 Mbps × pessoas).
 - O vídeo é codificado em H.264 na placa de vídeo quando disponível (menos CPU) e já começa em alta qualidade.
 

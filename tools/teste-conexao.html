@@ -1,0 +1,496 @@
+﻿<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teste de conexão · Telinha Café</title>
+  <style>
+    :root { --bg:#2A2320; --panel:#241D1A; --deep:#171210; --line:#5A4A44; --text:#EAE0D5; --muted:#9C8B7D; --accent:#D4A373; --ok:#86C07A; --bad:#E6AFA0; --warn:#E6BA86; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
+    main { max-width: 780px; margin: 0 auto; padding: 24px 16px 60px; }
+    h1 { font-size: 22px; margin: 0 0 4px; } h1 span { color: var(--accent); }
+    h2 { font-size: 16px; margin: 0 0 10px; color: #F1D6AE; }
+    p { margin: 6px 0; color: var(--muted); }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-top: 16px; }
+    button { font: inherit; font-weight: 600; height: 38px; padding: 0 16px; border-radius: 12px; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--text); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #241D1A; }
+    button:disabled { opacity: .5; cursor: default; }
+    input { font: inherit; height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--deep); color: var(--text); width: 140px; text-transform: uppercase; letter-spacing: 3px; text-align: center; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .code { font-size: 28px; font-weight: 700; letter-spacing: 6px; color: var(--accent); }
+    pre { background: var(--deep); border: 1px solid var(--line); border-radius: 10px; padding: 12px; white-space: pre-wrap; word-break: break-word; font: 12px/1.5 Consolas, monospace; max-height: 420px; overflow: auto; margin: 10px 0 0; }
+    .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+    .big { font-size: 16px; font-weight: 600; margin-top: 10px; }
+    .verdict { margin-top: 12px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--deep); display: none; }
+    .verdict.show { display: block; }
+    .verdict h3 { margin: 0 0 6px; font-size: 15px; }
+    .verdict p { color: var(--text); margin: 4px 0; }
+    .verdict .fix { color: #F1D6AE; }
+    .steps { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Teste de conexão · Telinha <span>Café</span></h1>
+  <p>Faz o mesmo tipo de conexão do app, espera até 30 segundos e explica <b>exatamente onde</b> a conexão parou. Não instala nada, não precisa de conta. IPs aparecem mascarados.</p>
+
+  <div class="card">
+    <h2>1. Sua rede</h2>
+    <p>Descobre se o "porteiro" da sua internet é tranquilo ou rígido, e se os servidores de apoio respondem.</p>
+    <div class="row"><button id="netBtn" class="primary">Testar minha rede</button></div>
+    <div id="netResult" class="big"></div>
+    <pre id="netLog" style="display:none"></pre>
+  </div>
+
+  <div class="card">
+    <h2>2. Teste com um amigo</h2>
+    <ol class="steps">
+      <li>Um clica em <b>Criar teste</b> e passa o código.</li>
+      <li>O outro digita o código e clica em <b>Entrar</b>.</li>
+      <li>Os dois deixam a página aberta até aparecer o resultado.</li>
+      <li>Depois <b>troquem os papéis</b> e repitam. Os dois copiam o relatório.</li>
+    </ol>
+    <div class="row" style="margin-top:10px">
+      <button id="hostBtn" class="primary">Criar teste</button>
+      <span class="muted">ou</span>
+      <input id="codeIn" maxlength="6" placeholder="CÓDIGO">
+      <button id="joinBtn">Entrar</button>
+    </div>
+    <div id="codeBox" class="row" style="margin-top:10px"></div>
+    <div id="pairResult" class="big"></div>
+    <div id="verdict" class="verdict"></div>
+    <pre id="log">(o passo a passo aparece aqui)</pre>
+    <div class="row" style="margin-top:10px"><button id="copyBtn">Copiar relatório pro Discord</button><span id="copied" class="ok"></span></div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script>
+<script>
+'use strict';
+// Mesma configuração de rede do app 1.2/1.3: só STUN (o TURN público do PeerJS está fora do ar).
+const STUN = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'];
+const ICE = [{ urls: STUN }];
+const PREFIX = 'telinha-diag-';
+const ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const HOST_DELAY = Number(new URLSearchParams(location.search).get('atraso')) || 0;
+const APP_TIMEOUT = 8;     // o app 1.2/1.3 desiste da entrada aqui
+const TEST_TIMEOUT = 30;
+const $ = (s) => document.querySelector(s);
+
+const lines = [];
+let t0 = 0, peer = null, netSummary = '', run = 0;
+
+const TYPE = { host: 'rede local', srflx: 'direto pela internet', prflx: 'direto (descoberto na hora)', relay: 'servidor TURN' };
+const mask = (ip) => !ip ? '?' : ip.endsWith('.local') ? 'oculto(.local)' : ip.includes(':') ? ip.split(':').slice(0, 2).join(':') + ':…' : ip.split('.').slice(0, 2).join('.') + '.x.x';
+const secs = () => (t0 ? (performance.now() - t0) / 1000 : 0);
+const stamp = () => (t0 ? `[${secs().toFixed(1)}s] ` : '');
+function log(msg) {
+  lines.push(stamp() + msg);
+  const pre = $('#log');
+  pre.textContent = lines.join('\n');
+  pre.scrollTop = pre.scrollHeight;
+}
+const count = (arr) => arr.reduce((m, k) => (m[k] = (m[k] || 0) + 1, m), {});
+const fmtCount = (m) => Object.keys(m).length ? Object.entries(m).map(([k, v]) => `${v}× ${TYPE[k] || k}`).join(', ') : 'nenhum';
+
+// =================== 1. sua rede ===================
+$('#netBtn').onclick = async () => {
+  $('#netBtn').disabled = true;
+  $('#netResult').textContent = 'Testando (5s)…';
+  const netLines = [];
+  const pc = new RTCPeerConnection({ iceServers: STUN.map((u) => ({ urls: u })) });
+  const cands = [];
+  const errors = [];
+  pc.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) cands.push(e.candidate); };
+  pc.onicecandidateerror = (e) => errors.push(`${e.url || '?'} → erro ${e.errorCode} ${e.errorText || ''}`.trim());
+  pc.createDataChannel('x');
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((r) => setTimeout(r, 5000));
+  pc.close();
+
+  const srflx = cands.filter((c) => c.type === 'srflx' && c.protocol === 'udp');
+  const hosts = cands.filter((c) => c.type === 'host');
+  const byBase = {};
+  for (const c of srflx) (byBase[c.relatedPort] = byBase[c.relatedPort] || new Set()).add(c.address + ':' + c.port);
+  const sym = Object.values(byBase).some((s) => s.size > 1);
+  const ipv6 = cands.some((c) => (c.address || '').includes(':'));
+  const portKept = srflx.some((c) => c.port === c.relatedPort);
+
+  netLines.push(`caminhos locais: ${hosts.length} (${ipv6 ? 'com' : 'sem'} IPv6)`);
+  netLines.push(`endereço público: ${srflx.length ? mask(srflx[0].address) : 'não descoberto'}${srflx.length ? ` | ${srflx.length} mapeamento(s)` : ''}`);
+  if (srflx.length) netLines.push(`porta pública ${portKept ? 'igual' : 'diferente'} da local${sym ? ' | portas DIFERENTES pra cada servidor STUN' : ' | mesma porta pra todos os servidores STUN'}`);
+  if (errors.length && !srflx.length) netLines.push('erros dos servidores de apoio:\n  ' + errors.slice(0, 6).join('\n  '));
+
+  if (!srflx.length) {
+    netSummary = 'Rede: STUN SEM RESPOSTA (UDP bloqueado?)';
+    $('#netResult').innerHTML = '<span class="bad">❌ Não consegui descobrir seu endereço público.</span> A rede está bloqueando UDP/STUN (rede de empresa, escola ou firewall/antivírus). Sem isso, só funciona com TURN ou VPN.';
+  } else if (sym) {
+    netSummary = `Rede: NAT RÍGIDO (simétrico) | IP ${mask(srflx[0].address)}`;
+    $('#netResult').innerHTML = '<span class="warn">🟠 Rede restrita (NAT rígido/simétrico).</span> Conecta com redes "tranquilas"; com outra rede rígida, só com TURN ou VPN.';
+  } else {
+    netSummary = `Rede: NAT tranquilo (cone) | IP ${mask(srflx[0].address)}`;
+    $('#netResult').innerHTML = '<span class="ok">🟢 Rede tranquila (NAT cone).</span> Conecta direto com quase todo mundo.';
+  }
+  netSummary += ` | ${hosts.length} caminhos locais${ipv6 ? ', IPv6' : ''}`;
+  const pre = $('#netLog');
+  pre.style.display = 'block';
+  pre.textContent = netLines.join('\n');
+  $('#netBtn').disabled = false;
+};
+
+// =================== 2. teste com amigo ===================
+function newPeer(id) {
+  return new Promise((res, rej) => {
+    const opts = { config: { iceServers: ICE }, debug: 0 };
+    const p = id ? new Peer(id, opts) : new Peer(opts);
+    const timer = setTimeout(() => rej(Object.assign(new Error('timeout'), { type: 'server-timeout' })), 15000);
+    p.on('open', () => { clearTimeout(timer); hookSignaling(p); res(p); });
+    p.on('error', (e) => { clearTimeout(timer); rej(e); });
+  });
+}
+
+// Acompanha tudo que acontece numa conexão e guarda pra análise.
+function track(conn, delay = 0) {
+  const pc = conn.peerConnection;
+  const info = { delay, local: [], errors: [], gatheringDone: null, checkingAt: null, answerAt: null };
+  if (!pc) return info;
+  pc.addEventListener('signalingstatechange', () => {
+    if (pc.signalingState === 'stable' && info.answerAt === null) {
+      info.answerAt = secs();
+      log('sinalização completa: os dois lados trocaram as descrições da conexão');
+    }
+  });
+  pc.addEventListener('icecandidate', (e) => {
+    if (e.candidate && e.candidate.candidate) {
+      info.local.push(e.candidate.type);
+    } else if (!e.candidate && info.gatheringDone === null) {
+      info.gatheringDone = secs();
+      log(`descobri meus caminhos: ${fmtCount(count(info.local))}`);
+    }
+  });
+  pc.addEventListener('icecandidateerror', (e) => {
+    const m = `${e.url || '?'} erro ${e.errorCode} ${e.errorText || ''}`.trim();
+    if (!info.errors.includes(m)) info.errors.push(m); // erro 701 é comum e inofensivo; só mostro se faltar o endereço público
+  });
+  // Erros ao aceitar um endereço do amigo (o PeerJS engole esses erros).
+  const add = pc.addIceCandidate.bind(pc);
+  // ?atraso=ms: quem cria espera antes de usar os endereços do amigo, pra o amigo "bater" primeiro.
+  pc.addIceCandidate = (c, ...rest) => new Promise((r) => setTimeout(r, info.delay || 0)).then(() => add(c, ...rest)).catch((e) => {
+    log(`navegador RECUSOU um endereço do amigo: ${e.name}: ${e.message}`);
+    throw e;
+  });
+  // Guarda as estatísticas durante a tentativa: quando o Chrome desiste, o PeerJS fecha a
+  // conexão e as estatísticas somem.
+  info.best = null;
+  info.snap = async () => {
+    if (pc.connectionState === 'closed') return info.best;
+    const a = await analyze(conn);
+    if (!a.error) {
+      const score = (x) => x.totals.sent + x.totals.recv + x.pairs.length + Object.keys(x.remote).length;
+      if (!info.best || score(a) >= score(info.best)) info.best = a;
+    }
+    return info.best;
+  };
+  info.timer = setInterval(info.snap, 1500);
+  pc.addEventListener('iceconnectionstatechange', () => {
+    const s = pc.iceConnectionState;
+    info.snap();
+    if (s === 'checking' && info.checkingAt === null) { info.checkingAt = secs(); log('testando os caminhos (mandando "toques" pro amigo)…'); }
+    else if (s === 'connected' || s === 'completed') log('um caminho funcionou!');
+    else if (s === 'failed') log('todos os caminhos falharam (ICE failed) — o navegador desistiu');
+    else if (s === 'disconnected') log('nenhuma resposta do amigo há um tempo (ICE disconnected)');
+    else if (s === 'closed') log('conexão fechada');
+  });
+  conn.on('error', (e) => log('erro na conexão: ' + (e.type || e.message)));
+  return info;
+}
+
+// Conta os endereços (candidatos) que passam pelo servidor de salas, nos dois sentidos.
+const sig = { out: [], in: [] };
+const quiet = new Set(); // conexões que só levam o relatório: não entram na contagem
+const candDesc = (c) => {
+  const m = /typ (\w+)/.exec(c || '');
+  const parts = (c || '').split(' ');
+  return `${TYPE[m && m[1]] || (m && m[1]) || '?'} ${(parts[2] || '').toLowerCase()} ${mask(parts[4])}`;
+};
+function hookSignaling(p) {
+  const sock = p.socket;
+  if (!sock || sock.__hooked) return;
+  sock.__hooked = true;
+  const send = sock.send.bind(sock);
+  sock.send = (msg) => {
+    if (msg && msg.type === 'CANDIDATE' && !quiet.has(msg.payload && msg.payload.connectionId)) {
+      const c = msg.payload && msg.payload.candidate && msg.payload.candidate.candidate;
+      sig.out.push(c);
+      log('mandei pro amigo pelo servidor: endereço ' + candDesc(c));
+    }
+    return send(msg);
+  };
+  sock.on('message', (msg) => {
+    if (msg && msg.type === 'CANDIDATE' && !quiet.has(msg.payload && msg.payload.connectionId)) {
+      const c = msg.payload && msg.payload.candidate && msg.payload.candidate.candidate;
+      sig.in.push(c);
+      log('recebi do amigo pelo servidor: endereço ' + candDesc(c));
+    }
+  });
+}
+
+// Lê as estatísticas da conexão: caminhos dos dois lados e o resultado de cada teste de caminho.
+async function analyze(conn) {
+  const out = { local: {}, remote: {}, pairs: [], selected: null, totals: { sent: 0, recv: 0, respRecv: 0, respSent: 0 } };
+  const pc = conn && conn.peerConnection;
+  if (!pc) return out;
+  try {
+    const stats = await pc.getStats();
+    const cand = {};
+    stats.forEach((s) => {
+      if (s.type === 'local-candidate' || s.type === 'remote-candidate') {
+        cand[s.id] = s;
+        const bucket = s.type === 'local-candidate' ? out.local : out.remote;
+        bucket[s.candidateType] = (bucket[s.candidateType] || 0) + 1;
+      }
+    });
+    stats.forEach((s) => {
+      if (s.type === 'transport' && s.selectedCandidatePairId) out.selected = stats.get(s.selectedCandidatePairId);
+    });
+    stats.forEach((s) => {
+      if (s.type !== 'candidate-pair') return;
+      const l = cand[s.localCandidateId], r = cand[s.remoteCandidateId];
+      const p = {
+        tipo: `${(l && TYPE[l.candidateType]) || '?'} → ${(r && TYPE[r.candidateType]) || '?'}`,
+        proto: l ? l.protocol : '?',
+        estado: s.state,
+        sent: s.requestsSent || 0, respRecv: s.responsesReceived || 0,
+        recv: s.requestsReceived || 0, respSent: s.responsesSent || 0,
+        rtt: s.currentRoundTripTime,
+      };
+      out.pairs.push(p);
+      out.totals.sent += p.sent; out.totals.respRecv += p.respRecv;
+      out.totals.recv += p.recv; out.totals.respSent += p.respSent;
+    });
+    if (out.selected) {
+      const l = cand[out.selected.localCandidateId], r = cand[out.selected.remoteCandidateId];
+      out.selectedText = `eu=${(l && TYPE[l.candidateType]) || '?'} (${l ? l.protocol : '?'}) ↔ amigo=${(r && TYPE[r.candidateType]) || '?'} | ping ${out.selected.currentRoundTripTime ? Math.round(out.selected.currentRoundTripTime * 1000) + 'ms' : '?'}`;
+    }
+  } catch (e) { out.error = e.message; }
+  return out;
+}
+
+// Estatísticas finais: a leitura de agora ou a melhor guardada durante a tentativa.
+async function finalStats(conn, info) {
+  if (info && info.timer) clearInterval(info.timer);
+  const now = await analyze(conn);
+  const best = info && info.best;
+  if (best && (now.error || best.totals.sent + best.totals.recv > now.totals.sent + now.totals.recv || !Object.keys(now.remote).length)) {
+    return Object.assign({}, best, { fromSnapshot: true, selectedText: now.selectedText || best.selectedText });
+  }
+  return now;
+}
+
+function logAnalysis(a, info) {
+  if (a.error) log('erro lendo estatísticas: ' + a.error);
+  if (a.fromSnapshot) log('(estatísticas de durante a tentativa; a conexão já tinha sido fechada)');
+  log(`pelo servidor: mandei ${sig.out.length} endereço(s), recebi ${sig.in.length} do amigo`);
+  if (!a.local.srflx && info && info.errors.length) log('servidores de apoio (STUN) falharam: ' + info.errors.join(' | '));
+  log(`caminhos meus: ${fmtCount(a.local)} | caminhos do amigo que chegaram: ${fmtCount(a.remote)}`);
+  log(`toques enviados: ${a.totals.sent}, respostas recebidas: ${a.totals.respRecv} | toques recebidos do amigo: ${a.totals.recv}, respostas que mandei: ${a.totals.respSent}`);
+  const interesting = a.pairs.filter((p) => p.sent || p.recv).sort((x, y) => (/internet|descoberto|TURN/.test(y.tipo) - /internet|descoberto|TURN/.test(x.tipo)) || (y.sent + y.recv) - (x.sent + x.recv)).slice(0, 6);
+  for (const p of interesting) log(`  • ${p.tipo} (${p.proto}): ${p.estado} | enviei ${p.sent}/respostas ${p.respRecv} | recebi ${p.recv}/respondi ${p.respSent}`);
+  if (a.selectedText) log('caminho escolhido: ' + a.selectedText);
+}
+
+// Traduz o que aconteceu num veredito em português.
+function verdict(outcome, a, info, extra = {}) {
+  const box = $('#verdict');
+  let title, why, fix, cls;
+  const remoteN = Object.values(a.remote || {}).reduce((x, y) => x + y, 0);
+  const myPublic = (a.local && a.local.srflx) || (info && info.local && info.local.includes('srflx'));
+  if (outcome === 'unavailable') {
+    cls = 'bad'; title = '❌ Código não existe no servidor';
+    why = 'O servidor de salas respondeu que ninguém está usando esse código. Ou o código está errado, ou a página de quem criou fechou/caiu.';
+    fix = 'Confira o código e se a outra pessoa ainda está com a página aberta mostrando o código.';
+  } else if (outcome === 'server') {
+    cls = 'bad'; title = '❌ Não consegui falar com o servidor de salas';
+    why = `Erro: ${extra.type || '?'}. A internet ou um firewall/antivírus está bloqueando o servidor (0.peerjs.com).`;
+    fix = 'Teste em outra rede (ex.: roteando a internet do celular) ou libere o navegador no antivírus.';
+  } else if (outcome === 'ok') {
+    const t = extra.time;
+    cls = t > APP_TIMEOUT ? 'warn' : 'ok';
+    title = t > APP_TIMEOUT ? `⚠️ Conectou, mas demorou ${t.toFixed(1)}s` : `✅ Conectou em ${t.toFixed(1)}s`;
+    why = (a.selectedText ? `Caminho: ${a.selectedText}. ` : '') + (t > APP_TIMEOUT ? `O app 1.2/1.3 desiste depois de ${APP_TIMEOUT}s e mostra "sala não encontrada" — por isso não entra no app, mesmo a rede funcionando.` : 'A rede entre vocês funciona nesse sentido.');
+    fix = t > APP_TIMEOUT ? 'Correção no app: esperar mais tempo antes de desistir.' : 'Se no app não entra mesmo assim, o problema é outro (versão ou fluxo do app).';
+    if (a.selected && /TURN/.test(a.selectedText || '')) why += ' (passou pelo servidor TURN)';
+  } else if (outcome === 'nosignal') {
+    cls = 'bad'; title = '❌ O pedido não chegou no amigo';
+    why = 'O código existe, mas a "batida na porta" não foi respondida: a página do amigo não recebeu o pedido ou não conseguiu responder pelo servidor.';
+    fix = 'Veja no relatório do amigo se apareceu "amigo bateu na porta". Se não apareceu, testem de novo; se continuar, mande os dois relatórios.';
+  } else {
+    // falhou depois de trocar as informações
+    cls = 'bad';
+    const T = a.totals;
+    if (remoteN === 0 && sig.in.length === 0) {
+      title = '❌ Os endereços do amigo nunca chegaram pelo servidor';
+      why = `Mandei ${sig.out.length} endereço(s) meus pelo servidor, mas não recebi nenhum do amigo. Sem endereço, não há onde bater.`;
+      fix = 'Veja no relatório do amigo quantos endereços ele diz que mandou. Se ele mandou e eu não recebi, o servidor de salas perdeu as mensagens.';
+    } else if (remoteN === 0) {
+      title = '❌ Os endereços do amigo chegaram, mas o navegador não usou';
+      why = `Recebi ${sig.in.length} endereço(s) do amigo pelo servidor, mas nenhum virou caminho de teste (ver linhas "RECUSOU" acima, se houver).`;
+      fix = 'Mande os dois relatórios completos.';
+    } else if (!myPublic) {
+      title = '❌ Não descobri meu próprio endereço público';
+      why = 'Minha rede bloqueou o STUN (UDP), então o amigo só recebeu endereços internos meus, que ele não alcança pela internet.';
+      fix = 'Rede bloqueando UDP: teste outra rede, ou use VPN (Radmin/ZeroTier) ou TURN.';
+    } else if (T.sent > 0 && T.recv === 0 && T.respRecv === 0) {
+      title = '❌ Bloqueio nos dois sentidos';
+      why = `Mandei ${T.sent} toques pro amigo e nenhum foi respondido, e nenhum toque dele chegou até mim. Os "porteiros" (NAT/CGNAT) das duas redes estão barrando — conexão direta é impossível entre essas duas redes.`;
+      fix = 'Solução: VPN em comum (Radmin VPN, ZeroTier, Tailscale) ou servidor TURN.';
+    } else if (T.recv > 0 && T.respRecv === 0) {
+      title = '❌ Só funciona no sentido amigo → eu';
+      why = `Os toques do amigo CHEGAM em mim (${T.recv}) e eu respondo (${T.respSent}), mas nenhuma das minhas respostas/toques volta (${T.sent} enviados, 0 respondidos). O bloqueio está na entrada da rede do AMIGO.`;
+      fix = 'Comparar com o relatório do amigo. Solução: VPN em comum ou TURN.';
+    } else if (T.respRecv > 0 && T.recv === 0) {
+      title = '❌ Só funciona no sentido eu → amigo';
+      why = `O amigo responde aos meus toques (${T.respRecv}), mas os toques dele nunca chegam em mim. O bloqueio está na entrada da MINHA rede.`;
+      fix = 'Comparar com o relatório do amigo. Solução: VPN em comum ou TURN.';
+    } else if (T.respRecv > 0 && T.recv > 0) {
+      title = '❌ Os dois se alcançaram, mas a conexão não fechou';
+      why = 'Os toques foram e voltaram nos dois sentidos, mas a conexão segura (DTLS) não completou. É raro: pode ser antivírus inspecionando o tráfego ou a conexão caiu no meio.';
+      fix = 'Mande os dois relatórios completos.';
+    } else {
+      title = '❌ Não conectou';
+      why = `Nenhum toque foi enviado (${T.sent}). A negociação nem começou direito.`;
+      fix = 'Mande os dois relatórios completos.';
+    }
+  }
+  box.className = 'verdict show';
+  box.innerHTML = `<h3 class="${cls}">${title}</h3><p>${why}</p><p class="fix">👉 ${fix}</p>`;
+  log(`VEREDITO: ${title} — ${why} — ${fix}`);
+}
+
+function reset(role) {
+  run++;
+  if (peer) { try { peer.destroy(); } catch {} }
+  peer = null; t0 = 0; lines.length = 0; sig.out.length = 0; sig.in.length = 0;
+  $('#pairResult').textContent = ''; $('#codeBox').textContent = ''; $('#copied').textContent = '';
+  $('#verdict').className = 'verdict';
+  log(`papel: ${role} | ${netSummary || 'rede: (clique em "Testar minha rede" antes, se puder)'} | ${navigator.userAgent.match(/(Chrome|Edg|Firefox|Safari)\/[\d.]+/g)?.join(' ') || ''}`);
+  return run;
+}
+
+// ---- quem cria ----
+$('#hostBtn').onclick = async () => {
+  const myRun = reset('anfitrião (quem criou)');
+  const code = Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => ALPHA[b % ALPHA.length]).join('');
+  try {
+    peer = await newPeer(PREFIX + code);
+    log('registrado no servidor de salas com o código ' + code + '. Esperando o amigo…');
+    $('#codeBox').innerHTML = `<span>Passe este código:</span> <span class="code">${code}</span>`;
+    let friend = 0;
+    peer.on('connection', (conn) => {
+      if (myRun !== run) return;
+      // Relatório que a página do amigo manda no fim do teste (chega pelo servidor, mesmo sem conexão direta).
+      if (conn.metadata && conn.metadata.report) {
+        quiet.add(conn.connectionId);
+        log('📄 RELATÓRIO DO AMIGO (lado de quem entrou):\n' + String(conn.metadata.report).slice(0, 40000) + '\n📄 fim do relatório do amigo');
+        setTimeout(() => { try { conn.close(); } catch {} }, 0);
+        return;
+      }
+      friend++;
+      log('══════ amigo #' + friend + ' ══════');
+      t0 = performance.now(); sig.out.length = 0; sig.in.length = 0;
+      log('amigo bateu na porta (o pedido chegou pelo servidor); negociando o caminho…');
+      const info = track(conn, HOST_DELAY);
+      if (HOST_DELAY) log('modo teste: vou esperar ' + HOST_DELAY + 'ms antes de bater no amigo (ele bate primeiro)');
+      let finished = false;
+      const giveUp = setTimeout(async () => {
+        if (finished) return;
+        finished = true;
+        const a = await finalStats(conn, info);
+        logAnalysis(a, info);
+        $('#pairResult').innerHTML = `<span class="bad">❌ não conectou em ${TEST_TIMEOUT}s</span>`;
+        verdict('fail', a, info);
+      }, TEST_TIMEOUT * 1000);
+      conn.on('open', async () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(giveUp);
+        await new Promise((r) => setTimeout(r, 300));
+        const a = await finalStats(conn, info);
+        logAnalysis(a, info);
+        $('#pairResult').innerHTML = `<span class="ok">✅ conectou em ${secs().toFixed(1)}s (sou o anfitrião)</span>`;
+        verdict('ok', a, info, { time: secs() });
+        conn.send({ t: 'oi' });
+      });
+      conn.on('data', (d) => log('mensagem do amigo recebida: ' + d.t));
+    });
+    peer.on('disconnected', () => { log('caí do servidor de salas; reconectando…'); setTimeout(() => { try { peer.reconnect(); } catch {} }, 1000); });
+  } catch (e) {
+    verdict(e.type === 'server-timeout' || /socket|network|server/.test(e.type || '') ? 'server' : 'server', {}, null, { type: e.type || e.message });
+  }
+};
+
+// ---- quem entra ----
+$('#joinBtn').onclick = async () => {
+  const code = $('#codeIn').value.trim().toUpperCase();
+  if (code.length !== 6) return;
+  const myRun = reset('quem entra');
+  let conn = null, info = null, finished = false;
+  const finish = async (outcome, extra) => {
+    if (finished || myRun !== run) return;
+    finished = true;
+    const a = await finalStats(conn, info);
+    if (outcome !== 'unavailable' && outcome !== 'server') logAnalysis(a, info);
+    verdict(outcome, a, info, extra);
+    // Manda o relatório pra quem criou o teste (vai junto do pedido de entrada, pelo servidor).
+    if (outcome !== 'unavailable' && outcome !== 'server' && peer && !peer.destroyed) {
+      try {
+        const rc = peer.connect(PREFIX + code, { metadata: { report: lines.join('\n').slice(-40000) }, serialization: 'json' });
+        quiet.add(rc.connectionId);
+        setTimeout(() => { try { rc.close(); } catch {} }, 5000);
+        log('relatório enviado pra quem criou o teste');
+      } catch (e) { log('não consegui enviar o relatório: ' + e.message); }
+    }
+  };
+  try {
+    log('conectando no servidor de salas…');
+    peer = await newPeer();
+    log('conectado ao servidor. Batendo na porta ' + code + '…');
+    t0 = performance.now();
+    conn = peer.connect(PREFIX + code, { reliable: true, serialization: 'json' });
+    info = track(conn);
+    peer.on('error', (e) => {
+      if (e.type === 'peer-unavailable') {
+        $('#pairResult').innerHTML = '<span class="bad">❌ código não existe</span>';
+        finish('unavailable');
+      } else log('erro do PeerJS: ' + e.type);
+    });
+    setTimeout(() => { if (!finished && myRun === run) log(`… ${APP_TIMEOUT}s: ainda negociando (o app 1.2/1.3 já teria desistido aqui)`); }, APP_TIMEOUT * 1000);
+    setTimeout(() => { if (!finished && myRun === run) log('… 15s: ainda negociando'); }, 15000);
+    setTimeout(() => {
+      if (finished || myRun !== run) return;
+      $('#pairResult').innerHTML = `<span class="bad">❌ não conectou em ${TEST_TIMEOUT}s</span>`;
+      finish(info && info.answerAt !== null ? 'fail' : 'nosignal');
+    }, TEST_TIMEOUT * 1000);
+    conn.on('open', async () => {
+      const t = secs();
+      await new Promise((r) => setTimeout(r, 300));
+      $('#pairResult').innerHTML = `<span class="${t > APP_TIMEOUT ? 'warn' : 'ok'}">${t > APP_TIMEOUT ? '⚠️' : '✅'} conectou em ${t.toFixed(1)}s</span>`;
+      finish('ok', { time: t });
+    });
+    conn.on('data', (d) => log('mensagem do anfitrião recebida: ' + d.t));
+  } catch (e) {
+    $('#pairResult').innerHTML = '<span class="bad">❌ servidor de salas</span>';
+    finished = false;
+    finish('server', { type: e.type || e.message });
+  }
+};
+
+$('#copyBtn').onclick = async () => {
+  const text = '```\nTeste de conexão Telinha Café\n' + lines.join('\n') + '\n```';
+  try { await navigator.clipboard.writeText(text); $('#copied').textContent = 'copiado!'; }
+  catch { $('#copied').textContent = 'selecione o texto acima e copie'; }
+};
+</script>
+</body>
+</html>
