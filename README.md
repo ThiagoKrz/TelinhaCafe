@@ -8,10 +8,10 @@ Compartilhamento de tela e câmera entre amigos (até 6 pessoas), direto P2P via
 Última versão em **[Releases](https://github.com/ThiagoKrz/TelinhaCafe/releases/latest)**.
 
 ## Instalar
-- **`TelinhaCafe-Setup-1.3.0.exe`** (recomendado): instala só pro seu usuário (não pede administrador),
-  cria atalho na área de trabalho e no menu Iniciar. Pra atualizar, é só rodar o instalador da versão nova por cima.
-- **`TelinhaCafe-1.3.0-portatil.exe`**: roda sem instalar (demora uns segundos a mais pra abrir).
-- **`TelinhaCafe-1.3.0.apk`** (Android 7+): entra nas mesmas salas do PC. Ao instalar, permita "instalar apps de
+- **`TelinhaCafe-Setup-1.4.0.exe`** (recomendado): instala só pro seu usuário (não pede administrador),
+  cria atalho na área de trabalho e no menu Iniciar. Pra atualizar, é só rodar o instalador da versão nova por cima (ou usar o aviso automático no app).
+- **`TelinhaCafe-1.4.0-portatil.exe`**: roda sem instalar (demora uns segundos a mais pra abrir).
+- **`TelinhaCafe-1.4.0.apk`** (Android 7+): entra nas mesmas salas do PC. Ao instalar, permita "instalar apps de
   fontes desconhecidas".
 - Na 1ª vez o Windows pode mostrar "O Windows protegeu o computador" → **Mais informações → Executar assim mesmo**
   (o app não é assinado).
