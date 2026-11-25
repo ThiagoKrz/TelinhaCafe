@@ -66,6 +66,55 @@ const {
   };
 })();
 
+async function checkForUpdates(manual = false) {
+  if (!telinha.checkUpdate) return;
+  const res = await telinha.checkUpdate();
+  if (!res || !res.ok) {
+    if (manual) toast('Não consegui verificar atualizações agora.', 'error');
+    return;
+  }
+  if (!res.hasUpdate) {
+    if (manual) toast(`Você já está na última versão (v${res.current})!`);
+    return;
+  }
+  const box = $('#updateBanner');
+  if (box) {
+    box.innerHTML = '';
+    box.classList.remove('hidden');
+    const row = document.createElement('div');
+    row.className = 'update-row';
+    const msg = document.createElement('span');
+    msg.className = 'update-msg';
+    msg.textContent = `Nova versão v${res.latest} disponível!`;
+    const btn = document.createElement('button');
+    btn.className = 'btn primary small';
+    btn.textContent = res.canAutoInstall ? 'Atualizar agora' : 'Baixar';
+    const bar = document.createElement('div');
+    bar.className = 'update-bar hidden';
+    bar.innerHTML = '<i></i>';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      if (res.canAutoInstall) {
+        bar.classList.remove('hidden');
+        msg.textContent = 'Baixando atualização… 0%';
+      }
+      const r = await telinha.installUpdate(res);
+      if (!r || !r.ok) {
+        btn.disabled = false;
+        bar.classList.add('hidden');
+        msg.textContent = `Nova versão v${res.latest} disponível!`;
+        toast((r && r.error) || 'Não deu pra baixar automaticamente. Abrindo página de download.', 'error');
+        openExternalUrl(res.releaseUrl);
+      } else if (r.openedBrowser) {
+        btn.disabled = false;
+      }
+    });
+    row.append(msg, btn);
+    box.append(row, bar);
+  }
+  if (manual) toast(`Nova versão v${res.latest} disponível! Veja o aviso na tela inicial.`);
+}
+
 // Ordem pra tentar primeiro com alguém novo: a que já precisou funcionar na minha rede.
 function firstGuess(p) {
   return (p && p.first) || state.iceHint || 'them';
@@ -3669,6 +3718,22 @@ function renderSettings() {
   v.className = 'muted';
   v.textContent = `Telinha Café ${state.appVersion}${state.portable ? ' (portátil)' : ''}. Todo mundo da sala precisa usar a mesma versão.`;
   about.appendChild(v);
+  if (telinha.checkUpdate) {
+    const uRow = document.createElement('div');
+    uRow.style.marginTop = '8px';
+    const uBtn = document.createElement('button');
+    uBtn.className = 'btn small';
+    uBtn.textContent = 'Verificar atualizações';
+    uBtn.addEventListener('click', async () => {
+      uBtn.disabled = true;
+      uBtn.textContent = 'Verificando…';
+      await checkForUpdates(true);
+      uBtn.disabled = false;
+      uBtn.textContent = 'Verificar atualizações';
+    });
+    uRow.appendChild(uBtn);
+    about.appendChild(uRow);
+  }
   const donate = $('#donateBtn').cloneNode(true);
   donate.removeAttribute('id');
   donate.style.marginTop = '10px';
@@ -4106,6 +4171,15 @@ function setupSideResize() {
 
   // Já testa a captura de áudio em segundo plano, pro seletor abrir rápido.
   picker.probe = telinha.probeAudio();
+  if (telinha.onUpdateProgress) {
+    telinha.onUpdateProgress((p) => {
+      const bar = document.querySelector('#updateBanner .update-bar i');
+      const lbl = document.querySelector('#updateBanner .update-msg');
+      if (bar && typeof p.pct === 'number') bar.style.width = p.pct + '%';
+      if (lbl) lbl.textContent = p.phase === 'installing' ? 'Instalando e reiniciando…' : `Baixando atualização… ${p.pct || 0}%`;
+    });
+  }
+  setTimeout(() => checkForUpdates(false), 1500);
 }
 
 init();

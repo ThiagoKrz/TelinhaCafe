@@ -486,3 +486,105 @@ ipcMain.handle('control-pending', (_e, on) => {
   }
   return true;
 });
+
+/* ------------------------------------------------------------ atualizações (GitHub Releases) */
+
+const GITHUB_RELEASE_API = 'https://api.github.com/repos/ThiagoKrz/TelinhaCafe/releases/latest';
+
+function cmpSemver(a, b) {
+  const pa = String(a || '').replace(/^v/i, '').split('.').map(Number);
+  const pb = String(b || '').replace(/^v/i, '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+ipcMain.handle('check-update', async () => {
+  const current = app.getVersion();
+  const portable = !!process.env.PORTABLE_EXECUTABLE_DIR;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(GITHUB_RELEASE_API, {
+      signal: ctrl.signal,
+      headers: { 'User-Agent': `TelinhaCafe/${current}`, Accept: 'application/vnd.github+json' },
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}`, current };
+    const data = await res.json();
+    const latest = String(data.tag_name || '').replace(/^v/i, '');
+    const hasUpdate = latest && cmpSemver(latest, current) > 0;
+    const assets = Array.isArray(data.assets) ? data.assets : [];
+    const wanted = portable
+      ? assets.find((a) => /portatil\.exe$/i.test(a.name || ''))
+      : assets.find((a) => /Setup.*\.exe$/i.test(a.name || ''));
+    return {
+      ok: true,
+      hasUpdate,
+      current,
+      latest: latest || current,
+      releaseUrl: data.html_url || 'https://github.com/ThiagoKrz/TelinhaCafe/releases/latest',
+      downloadUrl: wanted ? wanted.browser_download_url : null,
+      assetName: wanted ? wanted.name : null,
+      canAutoInstall: !portable && !!(wanted && wanted.browser_download_url),
+    };
+  } catch (e) {
+    return { ok: false, error: e && e.name === 'AbortError' ? 'timeout' : (e && e.message) || 'falhou', current };
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+let updating = false;
+ipcMain.handle('install-update', async (_e, { downloadUrl, assetName, releaseUrl } = {}) => {
+  if (updating) return { ok: false, error: 'Atualização já em andamento.' };
+  const portable = !!process.env.PORTABLE_EXECUTABLE_DIR;
+  if (portable || !downloadUrl || !/^https:\/\/github\.com\/ThiagoKrz\/TelinhaCafe\//i.test(downloadUrl)) {
+    const target = downloadUrl || releaseUrl || 'https://github.com/ThiagoKrz/TelinhaCafe/releases/latest';
+    if (/^https:\/\//i.test(target)) shell.openExternal(target);
+    return { ok: true, openedBrowser: true };
+  }
+
+  updating = true;
+  const safeName = String(assetName || 'TelinhaCafe-Setup-update.exe').replace(/[^a-zA-Z0-9._-]/g, '');
+  const dest = path.join(app.getPath('temp'), safeName);
+  try {
+    sendToRenderer('update-progress', { pct: 0, phase: 'downloading' });
+    const res = await fetch(downloadUrl, { headers: { 'User-Agent': `TelinhaCafe/${app.getVersion()}` } });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    const total = Number(res.headers.get('content-length') || 0);
+    let received = 0;
+    const out = fs.createWriteStream(dest);
+    const reader = res.body.getReader();
+    let lastPct = -1;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out.write(Buffer.from(value));
+      received += value.byteLength;
+      if (total > 0) {
+        const pct = Math.min(100, Math.round((received / total) * 100));
+        if (pct !== lastPct) {
+          lastPct = pct;
+          sendToRenderer('update-progress', { pct, received, total, phase: 'downloading' });
+        }
+      }
+    }
+    await new Promise((r, rej) => { out.end(r); out.on('error', rej); });
+    const stat = fs.statSync(dest);
+    if (stat.size < 1024 * 1024) throw new Error('Arquivo baixado parece incompleto.');
+    sendToRenderer('update-progress', { pct: 100, phase: 'installing' });
+    stopAudio();
+    stopControl();
+    hideOverlay();
+    spawn(dest, [], { detached: true, stdio: 'ignore' }).unref();
+    setTimeout(() => app.quit(), 350);
+    return { ok: true };
+  } catch (e) {
+    try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch {}
+    return { ok: false, error: (e && e.message) || 'Falha ao baixar atualização.' };
+  } finally {
+    updating = false;
+  }
+});

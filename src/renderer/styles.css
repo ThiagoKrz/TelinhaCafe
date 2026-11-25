@@ -495,6 +495,14 @@ legend { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color
   font: 600 12px inherit; cursor: pointer; opacity: .25; transition: opacity .15s;
 }
 .cinema-exit:hover { opacity: 1; }
+.update-banner {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(212, 163, 115, .14); border: 1px solid var(--accent);
+}
+.update-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.update-msg { font-size: 13px; font-weight: 600; color: var(--cream); }
+.update-bar { margin-top: 8px; height: 6px; border-radius: 99px; background: rgba(0, 0, 0, .35); overflow: hidden; }
+.update-bar i { display: block; height: 100%; width: 0%; background: var(--accent); border-radius: 99px; transition: width .15s linear; }
 
 /* ---------- Celular (APK Android) ---------- */
 .tile .ctrl-catch, .tile .annot-catch { touch-action: none; }

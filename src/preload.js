@@ -37,4 +37,10 @@ contextBridge.exposeInMainWorld('telinha', {
     ipcRenderer.removeAllListeners('audio-status');
     ipcRenderer.on('audio-status', (_e, status) => cb(status));
   },
+  checkUpdate: () => ipcRenderer.invoke('check-update'),
+  installUpdate: (info) => ipcRenderer.invoke('install-update', info),
+  onUpdateProgress: (cb) => {
+    ipcRenderer.removeAllListeners('update-progress');
+    ipcRenderer.on('update-progress', (_e, p) => cb(p));
+  },
 });
