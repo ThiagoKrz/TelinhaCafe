@@ -461,6 +461,41 @@ legend { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color
 .tel-list { display: flex; flex-direction: column; gap: 4px; }
 .tel-row { font: 12px/1.4 Consolas, monospace; color: var(--text); background: rgba(0, 0, 0, .22); padding: 5px 8px; border-radius: 6px; }
 
+/* ---------- Fase 2: Quick Chat, Chat Rico, Zoom, Cinema, Resize, VU ---------- */
+.quick-chat {
+  position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 25;
+  display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 12px;
+  background: rgba(36, 29, 26, .95); border: 2px solid var(--accent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .55); width: min(460px, calc(100% - 28px));
+}
+.quick-chat input { flex: 1; min-width: 0; }
+.msg.grouped { margin-top: 2px; padding-left: 36px; }
+.msg.grouped .msg-body { gap: 0; }
+.chat-link { color: var(--accent); text-decoration: underline; word-break: break-all; }
+.chat-link:hover { color: var(--cream); }
+.chat-img { display: block; max-width: 100%; max-height: 180px; border-radius: 8px; margin-top: 4px; cursor: pointer; border: 1px solid var(--line); transition: max-height .15s; }
+.chat-img.expanded { max-height: 460px; }
+.zoom-reset {
+  margin-left: 6px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--accent);
+  background: rgba(36, 29, 26, .9); color: var(--cream); font: 600 11px/1.2 inherit; cursor: pointer;
+}
+.tile.zoomed { cursor: grab; }
+.tile.zoomed:active { cursor: grabbing; }
+.draw-tools .clear-btn { font-size: 13px; color: var(--cream); }
+.audio-vu { width: 26px; height: 6px; border-radius: 99px; background: rgba(0, 0, 0, .35); overflow: hidden; display: inline-flex; align-items: center; margin-left: 4px; }
+.audio-vu i { display: block; height: 100%; width: 0%; background: #86C07A; border-radius: 99px; transition: width 80ms linear; }
+.side-resize { width: 5px; cursor: col-resize; background: transparent; transition: background .15s; flex: 0 0 5px; }
+.side-resize:hover, .side-resize.dragging { background: var(--accent-soft-2); }
+#side.collapsed + .side-resize, #room.cinema .side-resize { display: none; }
+#room.cinema .topbar, #room.cinema #side { display: none; }
+#room.cinema #stage { padding: 4px; }
+.cinema-exit {
+  position: absolute; top: 12px; right: 14px; z-index: 25; padding: 6px 12px; border-radius: 8px;
+  background: rgba(36, 29, 26, .88); border: 1px solid var(--accent); color: var(--cream);
+  font: 600 12px inherit; cursor: pointer; opacity: .25; transition: opacity .15s;
+}
+.cinema-exit:hover { opacity: 1; }
+
 /* ---------- Celular (APK Android) ---------- */
 .tile .ctrl-catch, .tile .annot-catch { touch-action: none; }
 .ctrl-kbd { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; pointer-events: none; }

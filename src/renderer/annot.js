@@ -62,11 +62,14 @@
       this.lastPos = new Map();
       this.chats = new Map();
       this.strokes = new Map();
+      this.shapes = [];
+      this.previewShapes = new Map();
+      this.reactions = [];
       this.marks = [];
       this.raf = 0;
     }
 
-    // evt: { type: 'ptr'|'ctrl-ptr'|'stroke'|'mark'|'chat', from, name, color, x, y, sid, pts, end, text, ctrl }
+    // evt: { type: 'ptr'|'ctrl-ptr'|'stroke'|'shape'|'mark'|'chat'|'clear'|'react', ... }
     handle(evt) {
       const now = performance.now();
       const color = /^#[0-9a-f]{6}$/i.test(evt.color) ? evt.color : '#5b8cff';
@@ -107,6 +110,28 @@
         }
         s.t = now;
         if (evt.end) s.done = true;
+      } else if (evt.type === 'shape') {
+        if (!['arrow', 'circle'].includes(evt.kind)) return;
+        if (!ok(evt.x1) || !ok(evt.y1) || !ok(evt.x2) || !ok(evt.y2)) return;
+        const w = [1, 2, 3].includes(evt.w) ? evt.w : 1;
+        const sh = { kind: evt.kind, x1: evt.x1, y1: evt.y1, x2: evt.x2, y2: evt.y2, color, w, t: now };
+        if (evt.preview) {
+          this.previewShapes.set(evt.from, sh);
+        } else {
+          this.previewShapes.delete(evt.from);
+          if (this.shapes.length < 40) this.shapes.push(sh);
+        }
+        const prev = this.lastPos.get(evt.from);
+        this.lastPos.set(evt.from, { x: evt.x2, y: evt.y2, name: name || (prev && prev.name) || '', color: (prev && prev.color) || color, t: now, ctrl: false });
+      } else if (evt.type === 'clear') {
+        this.strokes.clear();
+        this.shapes = [];
+        this.previewShapes.clear();
+        this.marks = [];
+      } else if (evt.type === 'react') {
+        const emoji = String(evt.emoji || '').slice(0, 8);
+        if (!emoji || this.reactions.length > 20) return;
+        this.reactions.push({ emoji, name, x: 0.1 + Math.random() * 0.25, t0: now, ttl: 2600 });
       } else if (evt.type === 'mark') {
         if (ok(evt.x) && ok(evt.y) && this.marks.length < 30) {
           this.marks.push({ x: evt.x, y: evt.y, color, t0: now });
@@ -142,6 +167,9 @@
       this.lastPos.clear();
       this.chats.clear();
       this.strokes.clear();
+      this.shapes = [];
+      this.previewShapes.clear();
+      this.reactions = [];
       this.marks = [];
       this.kick();
     }
@@ -189,6 +217,70 @@
         s.pts.forEach(([x, y], i) => (i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))));
         g.stroke();
       }
+
+      const drawShape = (sh, alpha) => {
+        const x1 = X(sh.x1), y1 = Y(sh.y1), x2 = X(sh.x2), y2 = Y(sh.y2);
+        const lw = Math.max(3, r.w / 380) * (sh.w === 3 ? 2.6 : sh.w === 2 ? 1.7 : 1);
+        g.globalAlpha = alpha;
+        g.strokeStyle = sh.color;
+        g.lineWidth = lw;
+        if (sh.kind === 'circle') {
+          const cx = (x1 + x2) / 2;
+          const cy = (y1 + y2) / 2;
+          const rx = Math.max(4, Math.abs(x2 - x1) / 2);
+          const ry = Math.max(4, Math.abs(y2 - y1) / 2);
+          g.beginPath();
+          g.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+          g.stroke();
+        } else if (sh.kind === 'arrow') {
+          const ang = Math.atan2(y2 - y1, x2 - x1);
+          const head = Math.max(14, lw * 4.2);
+          g.beginPath();
+          g.moveTo(x1, y1);
+          g.lineTo(x2, y2);
+          g.moveTo(x2, y2);
+          g.lineTo(x2 - head * Math.cos(ang - 0.45), y2 - head * Math.sin(ang - 0.45));
+          g.moveTo(x2, y2);
+          g.lineTo(x2 - head * Math.cos(ang + 0.45), y2 - head * Math.sin(ang + 0.45));
+          g.stroke();
+        }
+      };
+      this.shapes = this.shapes.filter((sh) => {
+        const age = now - sh.t;
+        if (age > STROKE_HOLD + STROKE_FADE) return false;
+        alive = true;
+        drawShape(sh, age < STROKE_HOLD ? 1 : 1 - (age - STROKE_HOLD) / STROKE_FADE);
+        return true;
+      });
+      for (const [id, sh] of this.previewShapes) {
+        if (now - sh.t > 4000) { this.previewShapes.delete(id); continue; }
+        alive = true;
+        drawShape(sh, 0.85);
+      }
+
+      this.reactions = this.reactions.filter((rc) => {
+        const t = (now - rc.t0) / rc.ttl;
+        if (t >= 1) return false;
+        alive = true;
+        const rx = r.x + rc.x * r.w;
+        const ry = r.y + r.h * (0.86 - t * 0.28);
+        g.globalAlpha = t < 0.12 ? t / 0.12 : t > 0.7 ? (1 - t) / 0.3 : 1;
+        g.font = '34px "Segoe UI Emoji", "Segoe UI", sans-serif';
+        g.fillText(rc.emoji, rx, ry);
+        if (rc.name) {
+          g.font = '600 12px "Segoe UI", sans-serif';
+          const tw = g.measureText(rc.name).width;
+          g.shadowBlur = 0;
+          g.fillStyle = 'rgba(36, 29, 26, 0.88)';
+          g.beginPath();
+          g.roundRect(rx - 4, ry + 6, tw + 12, 18, 6);
+          g.fill();
+          g.fillStyle = '#F1DFC8';
+          g.fillText(rc.name, rx + 2, ry + 19);
+          g.shadowBlur = 4;
+        }
+        return true;
+      });
 
       this.marks = this.marks.filter((m) => {
         const t = (now - m.t0) / MARK_TTL;

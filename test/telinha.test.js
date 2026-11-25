@@ -154,4 +154,25 @@ test('annot: balão de chat no ponteiro, controle remoto e clamp na borda', () =
   layer.handle({ type: 'chat', from: 'p3', name: 'Bia', text: 'oi' });
   layer.draw();
   assert.equal(calls.some((c) => c[0] === 'fillText'), false);
+
+  // Formas (seta e círculo), clear e reação no overlay
+  calls = [];
+  let ellipses = 0;
+  let lines = 0;
+  g.ellipse = () => { ellipses += 1; };
+  g.lineTo = () => { lines += 1; };
+  layer.handle({ type: 'shape', kind: 'arrow', from: 'p1', color: '#D4A373', w: 2, x1: 0.2, y1: 0.2, x2: 0.5, y2: 0.5, preview: false });
+  layer.handle({ type: 'shape', kind: 'circle', from: 'p1', color: '#D4A373', w: 2, x1: 0.3, y1: 0.3, x2: 0.6, y2: 0.6, preview: false });
+  layer.handle({ type: 'react', emoji: '🔥', name: 'Thiago' });
+  layer.draw();
+  assert.ok(lines >= 3, 'seta deve desenhar haste + pontas');
+  assert.equal(ellipses, 1, 'círculo deve chamar ellipse');
+  assert.ok(calls.some((c) => c[0] === 'fillText' && c[1] === '🔥'));
+
+  layer.handle({ type: 'clear', from: 'p1' });
+  ellipses = 0;
+  lines = 0;
+  layer.draw();
+  assert.equal(ellipses, 0);
+  assert.equal(lines, 0);
 });

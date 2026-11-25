@@ -27,6 +27,10 @@
     onControlEnded: noop,
     onAudioData: noop,
     onAudioStatus: noop,
+    onDeepLink: noop,
+    async readClipboard() {
+      try { return (await navigator.clipboard.readText()) || ''; } catch { return ''; }
+    },
 
     async copy(text) {
       try {

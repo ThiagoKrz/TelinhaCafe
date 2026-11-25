@@ -13,6 +13,70 @@ let win = null;
 let overlayWin = null;       // camada transparente com os ponteiros dos amigos, por cima da tela compartilhada
 let pendingShare = null;     // { id, audio } escolhido no seletor, usado pelo getDisplayMedia
 let audioProc = null;
+let pendingDeepLink = null;
+
+function extractRoomCodeFromArgs(argv) {
+  for (const arg of argv || []) {
+    const m = /^telinha:\/\/([A-Z0-9]{6})\/?$/i.exec(String(arg || '').trim());
+    if (m) return m[1].toUpperCase();
+  }
+  return null;
+}
+
+if (!process.env.TELINHA_PROFILE) {
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    app.quit();
+  } else {
+    app.on('second-instance', (_e, argv) => {
+      const code = extractRoomCodeFromArgs(argv);
+      if (win) {
+        if (win.isMinimized()) win.restore();
+        win.focus();
+        if (code) sendToRenderer('deep-link', code);
+      } else if (code) {
+        pendingDeepLink = code;
+      }
+    });
+  }
+}
+pendingDeepLink = extractRoomCodeFromArgs(process.argv);
+
+function winStatePath() {
+  return path.join(app.getPath('userData'), 'window-state.json');
+}
+
+function loadWindowState() {
+  try {
+    const st = JSON.parse(fs.readFileSync(winStatePath(), 'utf8'));
+    if (!st || typeof st.width !== 'number' || typeof st.height !== 'number') return null;
+    const width = Math.max(900, Math.min(3840, Math.round(st.width)));
+    const height = Math.max(600, Math.min(2160, Math.round(st.height)));
+    const displays = screen.getAllDisplays();
+    const visible = typeof st.x === 'number' && typeof st.y === 'number' && displays.some((d) => {
+      const b = d.workArea;
+      return st.x + width > b.x + 80 && st.x < b.x + b.width - 80 && st.y + height > b.y + 80 && st.y < b.y + b.height - 80;
+    });
+    return {
+      width,
+      height,
+      x: visible ? Math.round(st.x) : undefined,
+      y: visible ? Math.round(st.y) : undefined,
+      maximized: !!st.maximized,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveWindowState(w) {
+  if (!w || w.isDestroyed()) return;
+  try {
+    const maximized = w.isMaximized();
+    const bounds = maximized ? w.getNormalBounds() : w.getBounds();
+    fs.writeFileSync(winStatePath(), JSON.stringify({ ...bounds, maximized }));
+  } catch {}
+}
 
 function nativePath(name) {
   return app.isPackaged
@@ -22,9 +86,12 @@ function nativePath(name) {
 const helperPath = () => nativePath('AudioCap.exe');
 
 function createWindow() {
+  const saved = loadWindowState();
   win = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: saved ? saved.width : 1280,
+    height: saved ? saved.height : 800,
+    x: saved ? saved.x : undefined,
+    y: saved ? saved.y : undefined,
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#2A2320',
@@ -41,7 +108,22 @@ function createWindow() {
     },
   });
   win.removeMenu();
+  if (saved && saved.maximized) win.maximize();
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  win.webContents.on('did-finish-load', () => {
+    if (pendingDeepLink) {
+      sendToRenderer('deep-link', pendingDeepLink);
+      pendingDeepLink = null;
+    }
+  });
+  let saveTimer = null;
+  const queueSave = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveWindowState(win), 400);
+  };
+  win.on('resize', queueSave);
+  win.on('move', queueSave);
+  win.on('close', () => saveWindowState(win));
 
   // Links externos abrem no navegador padrão, nunca dentro do app.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -59,6 +141,9 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  try {
+    if (app.isPackaged) app.setAsDefaultProtocolClient('telinha');
+  } catch {}
   // getDisplayMedia no renderer cai aqui; entregamos a fonte escolhida no nosso seletor.
   session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
     const sel = pendingShare;
@@ -125,6 +210,10 @@ ipcMain.handle('select-source', (_e, sel) => {
 ipcMain.handle('copy', (_e, text) => {
   clipboard.writeText(String(text));
   return true;
+});
+
+ipcMain.handle('read-clipboard', () => {
+  try { return clipboard.readText() || ''; } catch { return ''; }
 });
 
 /* ------------------------------------------------------------ áudio (AudioCap.exe) */

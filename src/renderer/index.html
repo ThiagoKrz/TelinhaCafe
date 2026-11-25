@@ -74,6 +74,7 @@
       <button id="screenBtn" class="btn ctl">
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 3H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h5v2H7v2h10v-2h-2v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 13H4V5h16v11z"/></svg>
         <span>Compartilhar tela</span>
+        <span id="audioVu" class="audio-vu hidden" title="Nível do áudio da tela"><i></i></span>
       </button>
       <button id="switchBtn" class="btn ctl hidden" title="Trocar a tela/janela sem parar de transmitir">
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6.99 11 3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/></svg>
@@ -95,6 +96,9 @@
         </button>
         <div id="reactBar" class="react-bar hidden"></div>
       </div>
+      <button id="cinemaBtn" class="btn ctl icon-only" title="Modo Cinema (F)">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5zm2 2v10h14V7H5z"/></svg>
+      </button>
       <button id="chatBtn" class="btn ctl icon-only" title="Chat e pessoas">
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 14H5.2L4 17.2V4h16v12z"/></svg>
         <span id="unread" class="dot hidden"></span>
@@ -116,6 +120,10 @@
       <div id="focusArea" class="hidden"></div>
       <div id="grid"></div>
       <div id="reactions"></div>
+      <form id="quickChat" class="quick-chat hidden" autocomplete="off">
+        <input id="quickChatInput" maxlength="500" placeholder="Mensagem rápida no mouse… (Enter envia · Esc fecha)">
+        <button class="btn primary small" type="submit">Enviar</button>
+      </form>
       <div id="emptyState">
         <div class="empty-icon">
           <svg viewBox="0 0 24 24" width="40" height="40"><path fill="currentColor" d="M20 3H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h5v2H7v2h10v-2h-2v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 13H4V5h16v11z"/></svg>
@@ -123,8 +131,10 @@
         <h2>Ninguém está compartilhando ainda</h2>
         <p>Passe o código <b id="emptyCode"></b> pros amigos e clique em <b>Compartilhar tela</b> ou <b>Câmera</b>.</p>
       </div>
+      <button id="cinemaExit" class="cinema-exit hidden" title="Sair do Modo Cinema (F ou Esc)">Sair do Modo Cinema (F)</button>
     </div>
 
+    <div id="sideResize" class="side-resize" title="Arraste pra redimensionar o chat"></div>
     <aside id="side">
       <div class="people">
         <h3>Na sala <span id="peopleCount" class="muted"></span></h3>

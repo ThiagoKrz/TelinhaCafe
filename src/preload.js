@@ -9,6 +9,11 @@ contextBridge.exposeInMainWorld('telinha', {
   startAudio: (opts) => ipcRenderer.invoke('audio-start', opts),
   stopAudio: () => ipcRenderer.invoke('audio-stop'),
   copy: (text) => ipcRenderer.invoke('copy', text),
+  readClipboard: () => ipcRenderer.invoke('read-clipboard'),
+  onDeepLink: (cb) => {
+    ipcRenderer.removeAllListeners('deep-link');
+    ipcRenderer.on('deep-link', (_e, code) => cb(code));
+  },
   overlayShow: (sourceId) => ipcRenderer.invoke('overlay-show', sourceId),
   overlayHide: () => ipcRenderer.invoke('overlay-hide'),
   overlayEvent: (evt) => ipcRenderer.send('overlay-event', evt),

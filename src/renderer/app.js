@@ -135,6 +135,7 @@ const state = {
   heartbeat: null,
   join: null,
   sounds: loadPref('sounds', '1') === '1',
+  overlayReactions: loadPref('overlayReactions', '1') === '1',
   hidePreview: loadPref('hidePreview', '0') === '1',
   lastReact: 0,
 };
@@ -1180,6 +1181,12 @@ async function handleData(p, d) {
         if (document.hidden || !document.hasFocus() || $('#side').classList.contains('collapsed')) beep('chat');
       }
       break;
+    case 'chat-img':
+      if (typeof d.img === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(d.img) && d.img.length < 220000) {
+        addChatImage(p, d.img, false);
+        if (document.hidden || !document.hasFocus() || $('#side').classList.contains('collapsed')) beep('chat');
+      }
+      break;
     case 'react':
       if (REACTIONS.includes(d.emoji)) showReaction(d.emoji, p.name);
       break;
@@ -1846,14 +1853,42 @@ async function ensureScreenAudio() {
     URL.revokeObjectURL(url);
     const dest = ctx.createMediaStreamDestination();
     dest.channelCount = 2;
-    state.sa = { ctx, dest, node: null, loopSrc: null, loopTrack: null };
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    state.sa = { ctx, dest, analyser, vuBuf: new Uint8Array(128), vuTimer: null, node: null, loopSrc: null, loopTrack: null };
   }
   await state.sa.ctx.resume();
   return state.sa;
 }
 
+function setVuRunning(on) {
+  const vu = $('#audioVu');
+  const bar = vu && vu.querySelector('i');
+  if (state.sa && state.sa.vuTimer) { clearInterval(state.sa.vuTimer); state.sa.vuTimer = null; }
+  if (!vu || !bar) return;
+  vu.classList.toggle('hidden', !on);
+  if (!on) { bar.style.width = '0%'; return; }
+  state.sa.vuTimer = setInterval(() => {
+    const sa = state.sa;
+    if (!sa || !sa.analyser || !state.local.screen || !(state.screenSel && state.screenSel.audioOn)) {
+      setVuRunning(false);
+      return;
+    }
+    sa.analyser.getByteTimeDomainData(sa.vuBuf);
+    let sum = 0;
+    for (let i = 0; i < sa.vuBuf.length; i++) {
+      const v = (sa.vuBuf[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / sa.vuBuf.length);
+    const pct = Math.min(100, Math.round(rms * 320));
+    bar.style.width = pct + '%';
+  }, 90);
+}
+
 function clearScreenAudioInput() {
   telinha.stopAudio();
+  setVuRunning(false);
   const sa = state.sa;
   if (!sa) return;
   if (sa.node) { try { sa.node.disconnect(); } catch {} sa.node = null; }
@@ -1878,12 +1913,15 @@ async function applyScreenAudio(sel, loopTrack) {
     sa.loopTrack = loopTrack;
     sa.loopSrc = sa.ctx.createMediaStreamSource(new MediaStream([loopTrack]));
     sa.loopSrc.connect(sa.dest);
+    sa.loopSrc.connect(sa.analyser);
+    setVuRunning(true);
     return true;
   }
   if (loopTrack) loopTrack.stop();
 
   const node = new AudioWorkletNode(sa.ctx, 'pcm-player', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
   node.connect(sa.dest);
+  node.connect(sa.analyser);
   sa.node = node;
   telinha.onAudioData((data) => {
     if (sa.node !== node) return;
@@ -1908,6 +1946,7 @@ async function applyScreenAudio(sel, loopTrack) {
   } else {
     toast(opts.mode === 'window' ? 'Som só desta janela ligado.' : 'Som só deste app ligado.');
   }
+  setVuRunning(true);
   return true;
 }
 
@@ -1925,9 +1964,9 @@ telinha.onAudioStatus((st) => {
 
 /* ---------------------------------------------------------------- ponteiro / desenho na tela */
 
-function contentRect(video) {
-  const W = video.clientWidth;
-  const H = video.clientHeight;
+function contentRect(video, rect = null) {
+  const W = rect ? rect.width : video.clientWidth;
+  const H = rect ? rect.height : video.clientHeight;
   const vw = video.videoWidth || 16;
   const vh = video.videoHeight || 9;
   const s = Math.min(W / vw, H / vh);
@@ -1945,7 +1984,7 @@ function annotAllowedFor(ownerId) {
 // Chegou um ponteiro/risco de alguém.
 function onAnnot(p, d) {
   if (typeof d.to !== 'string' || !d.a || typeof d.a !== 'object') return;
-  if (!['ptr', 'stroke', 'mark'].includes(d.a.type)) return;
+  if (!['ptr', 'stroke', 'shape', 'mark', 'clear'].includes(d.a.type)) return;
   if (!annotAllowedFor(d.to)) return;
   const evt = { ...d.a, from: p.id, name: p.name, color: isHex(d.a.color) ? d.a.color : colorFor(p.name) };
   drawAnnot(d.to, evt);
@@ -1986,7 +2025,7 @@ function showChatOnPointers(fromId, name, color, text) {
 function sendAnnot(ownerId, a) {
   if (!annotAllowedFor(ownerId)) return;
   a = { ...a, color: a.type === 'ptr' ? myPtrColor() : myDrawColor() };
-  if (a.type === 'stroke') a.w = state.drawSize;
+  if (a.type === 'stroke' || a.type === 'shape') a.w = state.drawSize;
   broadcast({ t: 'annot', to: ownerId, a });
   drawAnnot(ownerId, { ...a, from: state.myId, name: 'Você' });
 }
@@ -1997,7 +2036,7 @@ function setupAnnotInput(t) {
   let stroke = null;   // { sid, pending, down: {x,y}, moved, timer }
   const norm = (e) => {
     const rect = t.video.getBoundingClientRect();
-    const cr = contentRect(t.video);
+    const cr = contentRect(t.video, rect);
     const x = (e.clientX - rect.left - cr.x) / cr.w;
     const y = (e.clientY - rect.top - cr.y) / cr.h;
     return x < 0 || x > 1 || y < 0 || y > 1 ? null : [Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000];
@@ -2011,8 +2050,17 @@ function setupAnnotInput(t) {
     const n = norm(e);
     const now = performance.now();
     if (stroke && n) {
-      stroke.pending.push(n);
-      if (Math.abs(n[0] - stroke.down[0]) + Math.abs(n[1] - stroke.down[1]) > 0.01) stroke.moved = true;
+      if (stroke.shape) {
+        stroke.last = n;
+        if (Math.abs(n[0] - stroke.down[0]) + Math.abs(n[1] - stroke.down[1]) > 0.01) stroke.moved = true;
+        if (now - stroke.lastSent > 40) {
+          stroke.lastSent = now;
+          drawAnnot(t.peerId, { type: 'shape', kind: stroke.shape, x1: stroke.down[0], y1: stroke.down[1], x2: n[0], y2: n[1], w: state.drawSize, color: myDrawColor(), preview: true, from: state.myId, name: 'Você' });
+        }
+      } else {
+        stroke.pending.push(n);
+        if (Math.abs(n[0] - stroke.down[0]) + Math.abs(n[1] - stroke.down[1]) > 0.01) stroke.moved = true;
+      }
     }
     if (now - lastPtr > 40) {
       lastPtr = now;
@@ -2024,13 +2072,20 @@ function setupAnnotInput(t) {
     const n = norm(e);
     if (!n) return;
     catcher.setPointerCapture(e.pointerId);
-    stroke = { sid: Math.random().toString(36).slice(2, 10), pending: [n], down: n, moved: false };
-    stroke.timer = setInterval(() => { if (stroke && stroke.moved) flush(false); }, 60);
+    const shape = e.shiftKey ? 'arrow' : e.altKey ? 'circle' : null;
+    stroke = { sid: Math.random().toString(36).slice(2, 10), pending: [n], down: n, last: n, moved: false, shape, lastSent: 0 };
+    if (!shape) stroke.timer = setInterval(() => { if (stroke && stroke.moved) flush(false); }, 60);
   });
   const up = (e) => {
     if (!stroke) return;
     clearInterval(stroke.timer);
-    if (stroke.moved) flush(true);
+    if (stroke.shape) {
+      if (stroke.moved) {
+        sendAnnot(t.peerId, { type: 'shape', kind: stroke.shape, x1: stroke.down[0], y1: stroke.down[1], x2: stroke.last[0], y2: stroke.last[1], preview: false });
+      } else {
+        sendAnnot(t.peerId, { type: 'mark', x: stroke.down[0], y: stroke.down[1] });
+      }
+    } else if (stroke.moved) flush(true);
     else sendAnnot(t.peerId, { type: 'mark', x: stroke.down[0], y: stroke.down[1] });
     stroke = null;
     try { catcher.releasePointerCapture(e.pointerId); } catch {}
@@ -2051,10 +2106,10 @@ function setDrawMode(t, on) {
   const b = t.el.querySelector('.b-annot');
   if (b) b.classList.toggle('on', !!on);
   if (on) renderDrawTools(t);
-  if (on && !was) toast('Mexa o mouse pra apontar, clique pra marcar, arraste pra riscar. Botão direito sai.');
+  if (on && !was) toast('Arraste pra riscar · Shift = seta · Alt = círculo · T = chat no mouse · Botão direito sai.');
 }
 
-// Paletinha que aparece no vídeo enquanto o lápis está ativo (cor e espessura do desenho).
+// Paletinha que aparece no vídeo enquanto o lápis está ativo (cor, espessura e limpar).
 function renderDrawTools(t) {
   const box = t.el.querySelector('.draw-tools');
   if (!box) return;
@@ -2087,6 +2142,15 @@ function renderDrawTools(t) {
     b.addEventListener('click', (e) => { e.stopPropagation(); setDrawSize(w); });
     box.appendChild(b);
   });
+  const sep2 = document.createElement('span');
+  sep2.className = 'tools-sep';
+  box.appendChild(sep2);
+  const clr = document.createElement('button');
+  clr.className = 'size clear-btn';
+  clr.textContent = '🧹';
+  clr.title = 'Limpar desenhos na tela';
+  clr.addEventListener('click', (e) => { e.stopPropagation(); sendAnnot(t.peerId, { type: 'clear' }); });
+  box.appendChild(clr);
 }
 
 function refreshDrawTools() {
@@ -2392,7 +2456,7 @@ function setupCtrlInput(t) {
   const target = () => (state.ctrl.controlling === t.peerId ? state.peers.get(t.peerId) : null);
   const norm = (e) => {
     const rect = t.video.getBoundingClientRect();
-    const cr = contentRect(t.video);
+    const cr = contentRect(t.video, rect);
     const x = (e.clientX - rect.left - cr.x) / cr.w;
     const y = (e.clientY - rect.top - cr.y) / cr.h;
     return [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))];
@@ -2689,7 +2753,7 @@ function addTile({ key, kind, local, stream, peerId }) {
       ${isScreen ? '<canvas class="annot"></canvas>' : ''}
       ${isScreen && !local ? '<div class="annot-catch"></div><div class="ctrl-catch" tabindex="0"></div><div class="draw-tools"></div>' : ''}
       ${isScreen && !local && IS_MOBILE ? '<input class="ctrl-kbd" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="Teclado do controle">' : ''}
-      <div class="tile-label"><span class="live"></span><span class="lbl"></span><span class="stats"></span></div>
+      <div class="tile-label"><span class="live"></span><span class="lbl"></span><span class="stats"></span><button class="zoom-reset hidden" title="Voltar zoom pra 100%"></button></div>
       <div class="tile-bar">
         <span class="vol hidden" title="Volume">${ICON_VOL}<input type="range" min="0" max="1" step="0.01"></span>
         <span></span>
@@ -2739,6 +2803,7 @@ function addTile({ key, kind, local, stream, peerId }) {
     const canvas = el.querySelector('canvas.annot');
     if (canvas) t.layer = new AnnotLayer(canvas, () => contentRect(video));
     if (el.querySelector('.annot-catch')) setupAnnotInput(t);
+    if (isScreen) setupTileZoom(t);
     tiles.set(key, t);
     $('#grid').appendChild(el);
   }
@@ -2756,6 +2821,73 @@ function addTile({ key, kind, local, stream, peerId }) {
 
   refreshTileLabel(t);
   updateStageUI();
+}
+
+function setupTileZoom(t) {
+  const z = { s: 1, x: 0, y: 0 };
+  t.zoom = z;
+  const canvas = t.el.querySelector('canvas.annot');
+  const badge = t.el.querySelector('.zoom-reset');
+  const apply = () => {
+    const W = t.el.clientWidth || 1;
+    const H = t.el.clientHeight || 1;
+    const maxX = Math.max(0, (W * (z.s - 1)) / 2);
+    const maxY = Math.max(0, (H * (z.s - 1)) / 2);
+    z.x = Math.max(-maxX, Math.min(maxX, z.x));
+    z.y = Math.max(-maxY, Math.min(maxY, z.y));
+    const tf = z.s > 1.01 ? `translate(${z.x.toFixed(1)}px, ${z.y.toFixed(1)}px) scale(${z.s.toFixed(3)})` : '';
+    t.video.style.transform = tf;
+    if (canvas) canvas.style.transform = tf;
+    t.el.classList.toggle('zoomed', z.s > 1.01);
+    if (badge) {
+      badge.classList.toggle('hidden', z.s <= 1.01);
+      badge.textContent = `${z.s.toFixed(1)}× ↺`;
+    }
+  };
+  const reset = () => { z.s = 1; z.x = 0; z.y = 0; apply(); };
+  t.resetZoom = reset;
+  if (badge) badge.addEventListener('click', (e) => { e.stopPropagation(); reset(); });
+
+  t.el.addEventListener('wheel', (e) => {
+    if (t.el.classList.contains('controlling') && !e.ctrlKey) return;
+    if (!e.ctrlKey && z.s <= 1.01 && t.el.classList.contains('drawing')) return;
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const prevS = z.s;
+    z.s = Math.max(1, Math.min(4, prevS * factor));
+    if (z.s <= 1.02) { reset(); return; }
+    const rect = t.el.getBoundingClientRect();
+    const cx = e.clientX - rect.left - rect.width / 2;
+    const cy = e.clientY - rect.top - rect.height / 2;
+    const ratio = z.s / prevS;
+    z.x = cx - (cx - z.x) * ratio;
+    z.y = cy - (cy - z.y) * ratio;
+    apply();
+  }, { passive: false });
+
+  let pan = null;
+  t.el.addEventListener('pointerdown', (e) => {
+    if (z.s <= 1.01) return;
+    const isMiddle = e.button === 1;
+    const canDrag = isMiddle || (e.button === 0 && !t.el.classList.contains('drawing') && !t.el.classList.contains('controlling'));
+    if (!canDrag || e.target.closest('.tile-bar, .draw-tools, .zoom-reset')) return;
+    e.preventDefault();
+    pan = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: z.x, oy: z.y };
+    t.el.setPointerCapture(e.pointerId);
+  });
+  t.el.addEventListener('pointermove', (e) => {
+    if (!pan || e.pointerId !== pan.id) return;
+    z.x = pan.ox + (e.clientX - pan.sx);
+    z.y = pan.oy + (e.clientY - pan.sy);
+    apply();
+  });
+  const endPan = (e) => {
+    if (!pan || e.pointerId !== pan.id) return;
+    pan = null;
+    try { t.el.releasePointerCapture(e.pointerId); } catch {}
+  };
+  t.el.addEventListener('pointerup', endPan);
+  t.el.addEventListener('pointercancel', endPan);
 }
 
 // Mostra/esconde o volume e o lápis conforme o que a pessoa está mandando.
@@ -2906,6 +3038,9 @@ function sendReaction(emoji) {
 
 function showReaction(emoji, who) {
   const layer = $('#reactions');
+  if (sharingWholeScreen() && state.overlayReactions) {
+    telinha.overlayEvent({ type: 'react', emoji, name: who });
+  }
   if (layer.childElementCount > 25) return;
   const el = document.createElement('div');
   el.className = 'reaction';
@@ -3069,27 +3204,130 @@ function updatePeopleUI() {
 
 /* ---------------------------------------------------------------- chat */
 
-function addChat(from, text, mine) {
+function openExternalUrl(url) {
+  if (!/^https?:\/\//i.test(url)) return;
+  if (telinha.openExternal) telinha.openExternal(url);
+  else window.open(url, '_blank', 'noopener');
+}
+
+function renderRichText(container, text) {
+  const re = /(https?:\/\/[^\s<>"']+)/gi;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const url = m[0];
+    const a = document.createElement('a');
+    a.className = 'chat-link';
+    a.href = '#';
+    a.textContent = url;
+    a.title = url;
+    a.addEventListener('click', (e) => { e.preventDefault(); openExternalUrl(url); });
+    container.appendChild(a);
+    last = m.index + url.length;
+  }
+  if (last < text.length) container.appendChild(document.createTextNode(text.slice(last)));
+}
+
+function isGroupedMsg(senderKey) {
+  const log = $('#chatLog');
+  const prev = log && log.lastElementChild;
+  if (!prev || prev.classList.contains('system')) return false;
+  const prevTs = Number(prev.dataset.ts || 0);
+  return prev.dataset.from === senderKey && Date.now() - prevTs < 120000;
+}
+
+function buildChatShell(from, mine) {
+  const senderKey = mine ? 'me' : (from && from.id) || 'other';
   const name = mine ? state.name : from.name;
   const avatar = mine ? state.avatar : from.avatar;
+  const grouped = isGroupedMsg(senderKey);
   const el = document.createElement('div');
-  el.className = 'msg';
+  el.className = 'msg' + (grouped ? ' grouped' : '');
+  el.dataset.from = senderKey;
+  el.dataset.ts = String(Date.now());
   const body = document.createElement('div');
   body.className = 'msg-body';
-  const who = document.createElement('span');
-  who.className = 'who';
-  who.style.color = colorFor(name);
-  who.textContent = mine ? `${name} (você)` : name;
-  const when = document.createElement('span');
-  when.className = 'when';
-  when.textContent = timeNow();
+  if (!grouped) {
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.style.color = colorFor(name);
+    who.textContent = mine ? `${name} (você)` : name;
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = timeNow();
+    body.append(who, when);
+    el.append(avatarNode(name, avatar, 'sm'), body);
+  } else {
+    el.append(body);
+  }
+  return { el, body };
+}
+
+function addChat(from, text, mine) {
+  const { el, body } = buildChatShell(from, mine);
   const txt = document.createElement('div');
   txt.className = 'text';
-  txt.textContent = text;
-  body.append(who, when, txt);
-  el.append(avatarNode(name, avatar, 'sm'), body);
+  renderRichText(txt, text);
+  body.appendChild(txt);
   appendToChat(el);
   if (!mine && $('#side').classList.contains('collapsed')) $('#unread').classList.remove('hidden');
+}
+
+function addChatImage(from, dataUrl, mine) {
+  const { el, body } = buildChatShell(from, mine);
+  const img = new Image();
+  img.className = 'chat-img';
+  img.src = dataUrl;
+  img.alt = 'Imagem enviada no chat';
+  img.title = 'Clique pra ampliar';
+  img.addEventListener('click', () => img.classList.toggle('expanded'));
+  body.appendChild(img);
+  appendToChat(el);
+  if (!mine && $('#side').classList.contains('collapsed')) $('#unread').classList.remove('hidden');
+}
+
+function sendChatMessage(rawText) {
+  const text = String(rawText || '').trim().slice(0, 500);
+  if (!text || !state.inRoom) return;
+  broadcast({ t: 'chat', text });
+  addChat(null, text, true);
+  showChatOnPointers(state.myId, 'Você', myPtrColor(), text);
+}
+
+function compressChatImage(file) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const max = 900;
+      const s = Math.min(1, max / Math.max(img.width || 1, img.height || 1));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.width * s));
+      c.height = Math.max(1, Math.round(img.height * s));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      let out = c.toDataURL('image/jpeg', 0.78);
+      if (out.length > 200000) out = c.toDataURL('image/jpeg', 0.55);
+      resolve(out.length < 220000 ? out : null);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+
+function openQuickChat() {
+  if (!state.inRoom) return;
+  const bar = $('#quickChat');
+  const inp = $('#quickChatInput');
+  bar.classList.remove('hidden');
+  inp.value = '';
+  inp.focus();
+}
+
+function closeQuickChat() {
+  const bar = $('#quickChat');
+  if (bar) bar.classList.add('hidden');
 }
 
 function addSystem(text) {
@@ -3193,6 +3431,10 @@ function renderSettings() {
       if (v !== state.annotAllow) toggleAnnotAllow();
     }));
     prefs.appendChild(switchRow('Permitir pedidos de controle da minha tela', 'Os amigos podem pedir pra usar seu mouse e teclado. Você sempre precisa aceitar, e Ctrl+Alt+X corta na hora.', state.ctrlAllow, toggleCtrlAllow));
+    prefs.appendChild(switchRow('Mostrar reações por cima da tela', 'Mostra os emojis que os amigos mandam na camada transparente sobre o seu monitor.', state.overlayReactions, (v) => {
+      state.overlayReactions = v;
+      savePref('overlayReactions', v ? '1' : '0');
+    }));
   }
   body.appendChild(prefs);
 
@@ -3655,10 +3897,32 @@ async function init() {
   renderRecentRooms();
   (nameInput.value ? codeInput : nameInput).focus();
 
-  $('#codeBtn').addEventListener('click', async () => {
-    await telinha.copy(state.code);
-    toast('Código copiado!');
+  $('#codeBtn').addEventListener('click', async (e) => {
+    if (e.shiftKey) {
+      await telinha.copy('telinha://' + state.code);
+      toast('Link de convite copiado: telinha://' + state.code);
+    } else {
+      await telinha.copy(state.code);
+      toast('Código copiado! (Shift+clique copia link)');
+    }
   });
+  codeInput.addEventListener('focus', async () => {
+    if (codeInput.value.trim() || !telinha.readClipboard) return;
+    const clip = String(await telinha.readClipboard()).trim();
+    const m = /^(?:telinha:\/\/)?([A-HJ-NP-Z2-9]{6})\/?$/i.exec(clip);
+    if (m) {
+      codeInput.value = m[1].toUpperCase();
+      toast('Código colado da área de transferência: ' + codeInput.value);
+    }
+  });
+  if (telinha.onDeepLink) {
+    telinha.onDeepLink((code) => {
+      if (!code || state.inRoom) return;
+      codeInput.value = code;
+      if (nameInput.value.trim()) joinRoom();
+      else toast(`Sala ${code} pronta! Digite seu nome e clique em Entrar.`);
+    });
+  }
   $('#screenBtn').addEventListener('click', () => (state.local.screen ? stopScreen() : openPicker('start')));
   $('#switchBtn').addEventListener('click', () => openPicker('switch'));
   $('#annotBtn').addEventListener('click', toggleAnnotAllow);
@@ -3709,12 +3973,37 @@ async function init() {
   $('#chatForm').addEventListener('submit', (e) => {
     e.preventDefault();
     const input = $('#chatInput');
-    const text = input.value.trim();
-    if (!text) return;
-    broadcast({ t: 'chat', text });
-    addChat(null, text, true);
-    showChatOnPointers(state.myId, 'Você', myPtrColor(), text);
+    sendChatMessage(input.value);
     input.value = '';
+  });
+  $('#chatInput').addEventListener('paste', async (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items || !state.inRoom) return;
+    for (const item of items) {
+      if (item.type && item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) return;
+        const dataUrl = await compressChatImage(file);
+        if (!dataUrl) { toast('Imagem muito grande pro chat.', 'error'); return; }
+        broadcast({ t: 'chat-img', img: dataUrl });
+        addChatImage(null, dataUrl, true);
+        return;
+      }
+    }
+  });
+  $('#quickChat').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const inp = $('#quickChatInput');
+    sendChatMessage(inp.value);
+    inp.value = '';
+    closeQuickChat();
+  });
+  $('#quickChatInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      closeQuickChat();
+    }
   });
 
   document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => {
@@ -3731,14 +4020,74 @@ async function init() {
   $('#pickerCancel').addEventListener('click', closePicker);
   $('#pickerShare').addEventListener('click', confirmPicker);
   $('#picker').addEventListener('mousedown', (e) => { if (e.target.id === 'picker') closePicker(); });
+function toggleCinema(force) {
+  const room = $('#room');
+  const on = typeof force === 'boolean' ? force : !room.classList.contains('cinema');
+  room.classList.toggle('cinema', on);
+  $('#cinemaBtn').classList.toggle('on', on);
+  $('#cinemaExit').classList.toggle('hidden', !on);
+  layoutGrid();
+}
+
+function setupSideResize() {
+  const handle = $('#sideResize');
+  const side = $('#side');
+  if (!handle || !side) return;
+  const saved = Number(loadPref('sideWidth', '0'));
+  if (saved >= 240 && saved <= 520) side.style.width = saved + 'px';
+  let drag = null;
+  handle.addEventListener('pointerdown', (e) => {
+    if (side.classList.contains('collapsed')) return;
+    e.preventDefault();
+    drag = { id: e.pointerId, sx: e.clientX, sw: side.getBoundingClientRect().width };
+    handle.classList.add('dragging');
+    handle.setPointerCapture(e.pointerId);
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const w = Math.max(240, Math.min(520, Math.round(drag.sw + (drag.sx - e.clientX))));
+    side.style.width = w + 'px';
+    layoutGrid();
+  });
+  const end = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const w = Math.round(side.getBoundingClientRect().width);
+    if (w >= 240 && w <= 520) savePref('sideWidth', String(w));
+    handle.classList.remove('dragging');
+    drag = null;
+    try { handle.releasePointerCapture(e.pointerId); } catch {}
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+
   document.addEventListener('keydown', (e) => {
+    const tag = document.activeElement && document.activeElement.tagName;
+    const inField = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
     if (e.key === 'Escape') {
+      if (!$('#quickChat').classList.contains('hidden')) { closeQuickChat(); return; }
+      if ($('#room').classList.contains('cinema')) { toggleCinema(false); return; }
       closePicker();
       closeSettings();
       closeMenus();
       for (const t of tiles.values()) setDrawMode(t, false);
+      return;
+    }
+    if (inField || !state.inRoom || state.ctrl.controlling) return;
+    if ((e.key === 't' || e.key === 'T') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      openQuickChat();
+    } else if (e.key === 'Enter' && [...tiles.values()].some((t) => t.el.classList.contains('drawing'))) {
+      e.preventDefault();
+      openQuickChat();
+    } else if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      toggleCinema();
     }
   });
+  $('#cinemaBtn').addEventListener('click', () => toggleCinema());
+  $('#cinemaExit').addEventListener('click', () => toggleCinema(false));
+  setupSideResize();
 
   window.addEventListener('online', () => {
     if (state.peer && !state.leaving && state.peer.disconnected) {
