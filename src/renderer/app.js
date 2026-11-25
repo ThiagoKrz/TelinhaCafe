@@ -1119,7 +1119,9 @@ async function handleData(p, d) {
       break;
     case 'chat':
       if (typeof d.text === 'string' && d.text.trim()) {
-        addChat(p, d.text.slice(0, 500), false);
+        const text = d.text.slice(0, 500);
+        addChat(p, text, false);
+        showChatOnPointers(p.id, p.name, colorFor(p.name), text);
         if (document.hidden || !document.hasFocus() || $('#side').classList.contains('collapsed')) beep('chat');
       }
       break;
@@ -1892,6 +1894,30 @@ function drawAnnot(ownerId, evt) {
   if (ownerId === state.myId) telinha.overlayEvent(evt);
 }
 
+// Mostra a mensagem de chat num balão ao lado do ponteiro/mouse de quem está apontando ou controlando.
+function showChatOnPointers(fromId, name, color, text) {
+  for (const t of tiles.values()) {
+    if (t.kind !== 'screen' || !t.layer) continue;
+    const evt = { type: 'chat', from: fromId, name, color, text };
+    if ((t.peerId === 'me' && state.ctrl.granted === fromId)
+      || (fromId === state.myId && state.ctrl.controlling === t.peerId)) {
+      evt.x = 0.5;
+      evt.y = 0.14;
+      evt.ctrl = true;
+    }
+    t.layer.handle(evt);
+  }
+  if (sharingWholeScreen() && fromId !== state.myId) {
+    const evt = { type: 'chat', from: fromId, name, color, text };
+    if (state.ctrl.granted === fromId) {
+      evt.x = 0.5;
+      evt.y = 0.14;
+      evt.ctrl = true;
+    }
+    telinha.overlayEvent(evt);
+  }
+}
+
 // Eu apontando/desenhando na tela de outra pessoa.
 function sendAnnot(ownerId, a) {
   if (!annotAllowedFor(ownerId)) return;
@@ -2138,6 +2164,7 @@ function revokeControl(message, notify = true) {
   if (!id) return;
   state.ctrl.granted = null;
   telinha.controlStop();
+  drawAnnot(state.myId, { type: 'ctrl-ptr', from: id, x: null });
   const p = state.peers.get(id);
   if (p && notify) send(p, { t: 'ctrl-revoke' });
   if (message !== null) addSystem(message || `Você encerrou o controle de ${p ? p.name : 'outra pessoa'}.`);
@@ -2159,9 +2186,13 @@ function denyAllPending(reason) {
 function onCtrlInput(p, d) {
   if (state.ctrl.granted !== p.id) return;
   switch (d.k) {
-    case 'm':
-      telinha.controlInput({ k: 'm', x: Number(d.x), y: Number(d.y) });
+    case 'm': {
+      const x = Number(d.x);
+      const y = Number(d.y);
+      telinha.controlInput({ k: 'm', x, y });
+      drawAnnot(state.myId, { type: 'ctrl-ptr', from: p.id, name: p.name, color: colorFor(p.name), x, y });
       break;
+    }
     case 'd':
     case 'u':
       if ([0, 1, 2].includes(d.b)) telinha.controlInput({ k: d.k, b: d.b });
@@ -2273,7 +2304,10 @@ function endControlling(message) {
   if (!id) return;
   state.ctrl.controlling = null;
   const t = tiles.get(tileKey(id, 'screen'));
-  if (t) t.el.classList.remove('controlling');
+  if (t) {
+    t.el.classList.remove('controlling');
+    if (t.layer) t.layer.handle({ type: 'ctrl-ptr', from: state.myId, x: null });
+  }
   if (message) toast(message);
   updateCtrlButtons();
 }
@@ -2369,6 +2403,7 @@ function setupCtrlInput(t) {
     lastMove = now;
     const [x, y] = norm(e);
     send(p, { t: 'ci', k: 'm', x: round(x), y: round(y) });
+    if (t.layer) t.layer.handle({ type: 'ctrl-ptr', from: state.myId, name: 'Você', color: myPtrColor(), x, y });
   };
   const click = (p, b) => {
     send(p, { t: 'ci', k: 'd', b });
@@ -3591,6 +3626,7 @@ async function init() {
     if (!text) return;
     broadcast({ t: 'chat', text });
     addChat(null, text, true);
+    showChatOnPointers(state.myId, 'Você', myPtrColor(), text);
     input.value = '';
   });
 

@@ -48,6 +48,8 @@ As duas primeiras precisam de Windows 11 ou Windows 10 atualizado; se não der, 
 
 - **Cores**: cada um escolhe a cor do ponteiro e a do desenho (paleta ou qualquer cor) e a espessura
   (fino/médio/grosso), na paletinha que aparece no vídeo com o lápis ativo ou em ⚙ Configurações.
+- **Chat no ponteiro**: quem estiver apontando/desenhando ou controlando a tela e mandar mensagem no chat
+  mostra um balão com o texto ao lado do mouse por cima da tela (sem precisar abrir o app pra ler).
 
 ### Controle remoto
 - Quem assiste clica no 🖱 do vídeo pra **pedir controle** do mouse e do teclado.
