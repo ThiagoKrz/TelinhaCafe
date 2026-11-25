@@ -171,6 +171,7 @@ const state = {
   drawTool: 'pen',             // 'pen' | 'arrow' | 'circle' | 'rect' | 'eraser'
   drawPin: false,              // false = temporário (some sozinho), true = Modo Desenho Real (fixo)
   drawHistory: [],             // [{ ownerId, id }] para Ctrl+Z / Desfazer
+  unreadCount: 0,
   // Controle remoto. Como dono da tela: granted (quem controla) e pending (pedidos na fila).
   // Como quem assiste: asking (pedi e estou esperando) e controlling (estou controlando).
   ctrl: { granted: null, pending: [], asking: null, controlling: null, cooldown: new Map() },
@@ -2357,46 +2358,67 @@ function undoDraw(ownerId) {
   }
 }
 
-// Paletinha que aparece no vídeo enquanto o lápis está ativo (modo, ferramentas, cor, espessura e limpar).
+const DRAW_ICONS = {
+  pin: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>',
+  timer: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61 1.42-1.42a9.9 9.9 0 0 0-1.41-1.41l-1.42 1.42A8.96 8.96 0 0 0 12 4a9 9 0 1 0 7.03 3.39zM12 20a7 7 0 1 1 0-14 7 7 0 0 1 0 14z"/></svg>',
+  pen: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>',
+  arrow: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19 17 8v7h2V5H9v2h7L5 18l1 1z"/></svg>',
+  circle: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="2.2" d="M12 4a8 8 0 1 0 0 16 8 8 0 1 0 0-16z"/></svg>',
+  rect: '<svg viewBox="0 0 24 24" width="14" height="14"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2.2"/></svg>',
+  eraser: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="m16.24 3.56 4.95 4.94c.78.79.78 2.05 0 2.84L12 20.53a4.008 4.008 0 0 1-5.66 0L2.81 17c-.78-.79-.78-2.05 0-2.84l10.6-10.6c.79-.78 2.05-.78 2.83 0zM4.22 15.58l3.54 3.53c.78.79 2.04.79 2.83 0l3.53-3.53-4.95-4.95-4.95 4.95z"/></svg>',
+  undo: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>',
+  clear: '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
+};
+
+// Paletinha em 2 linhas compactas: ferramentas/ações em cima, cores/espessura embaixo.
 function renderDrawTools(t) {
   const box = t.el.querySelector('.draw-tools');
   if (!box) return;
   box.innerHTML = '';
+  t.el.classList.toggle('erasing', state.drawTool === 'eraser');
 
-  const mkTool = (icon, title, active, onClick) => {
+  const mkTool = (svg, title, active, onClick) => {
     const b = document.createElement('button');
     b.className = 'size tool-btn' + (active ? ' on' : '');
-    b.textContent = icon;
+    b.innerHTML = svg;
     b.title = title;
     b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
     return b;
   };
   const mkSep = () => { const s = document.createElement('span'); s.className = 'tools-sep'; return s; };
 
-  // Modo: Temporário (some sozinho) vs Fixo (Modo Desenho Real)
-  box.appendChild(mkTool(state.drawPin ? '📌' : '⏱', state.drawPin ? 'Modo Desenho Real (fixo) — clique pra voltar ao temporário' : 'Modo Temporário (some sozinho) — clique pra fixar desenhos', state.drawPin, () => {
-    state.drawPin = !state.drawPin;
-    toast(state.drawPin ? 'Modo Desenho Real: os traços ficam fixos até apagar.' : 'Modo Temporário: os traços somem sozinhos.');
-    refreshDrawTools();
-  }));
-  box.appendChild(mkSep());
-
-  // Ferramentas de desenho
+  const row1 = document.createElement('div');
+  row1.className = 'draw-row';
+  row1.appendChild(mkTool(state.drawPin ? DRAW_ICONS.pin : DRAW_ICONS.timer,
+    state.drawPin ? 'Modo Desenho Real (fixo) — clique pra voltar ao temporário' : 'Modo Temporário (some sozinho) — clique pra fixar desenhos',
+    state.drawPin, () => {
+      state.drawPin = !state.drawPin;
+      toast(state.drawPin ? 'Modo Desenho Real: os traços ficam fixos até apagar.' : 'Modo Temporário: os traços somem sozinhos.');
+      refreshDrawTools();
+    }));
+  row1.appendChild(mkSep());
   const tools = [
-    ['✏️', 'Livre', 'pen'],
-    ['↗', 'Seta (ou Shift)', 'arrow'],
-    ['◯', 'Círculo (ou Alt)', 'circle'],
-    ['▭', 'Retângulo', 'rect'],
-    ['⌫', 'Borracha (clique/arraste no traço)', 'eraser'],
+    [DRAW_ICONS.pen, 'Livre', 'pen'],
+    [DRAW_ICONS.arrow, 'Seta (ou Shift)', 'arrow'],
+    [DRAW_ICONS.circle, 'Círculo (ou Alt)', 'circle'],
+    [DRAW_ICONS.rect, 'Retângulo', 'rect'],
+    [DRAW_ICONS.eraser, 'Borracha (clique/arraste no traço)', 'eraser'],
   ];
-  for (const [icon, title, id] of tools) {
-    box.appendChild(mkTool(icon, title, state.drawTool === id, () => {
+  for (const [svg, title, id] of tools) {
+    row1.appendChild(mkTool(svg, title, state.drawTool === id, () => {
       state.drawTool = id;
       refreshDrawTools();
     }));
   }
-  box.appendChild(mkSep());
+  row1.appendChild(mkSep());
+  row1.appendChild(mkTool(DRAW_ICONS.undo, 'Desfazer último traço (Ctrl+Z)', false, () => undoDraw(t.peerId)));
+  row1.appendChild(mkTool(DRAW_ICONS.clear, 'Limpar todos os desenhos', false, () => {
+    state.drawHistory = state.drawHistory.filter((x) => x.ownerId !== t.peerId);
+    sendAnnot(t.peerId, { type: 'clear' });
+  }));
 
+  const row2 = document.createElement('div');
+  row2.className = 'draw-row';
   const current = myDrawColor().toLowerCase();
   for (const c of PALETTE) {
     const b = document.createElement('button');
@@ -2404,7 +2426,7 @@ function renderDrawTools(t) {
     b.style.background = c;
     b.title = c;
     b.addEventListener('click', (e) => { e.stopPropagation(); setDrawColor(c); });
-    box.appendChild(b);
+    row2.appendChild(b);
   }
   const custom = document.createElement('input');
   custom.type = 'color';
@@ -2413,8 +2435,8 @@ function renderDrawTools(t) {
   custom.value = current;
   custom.addEventListener('input', () => setDrawColor(custom.value, false));
   custom.addEventListener('change', () => setDrawColor(custom.value));
-  box.appendChild(custom);
-  box.appendChild(mkSep());
+  row2.appendChild(custom);
+  row2.appendChild(mkSep());
 
   [1, 2, 3].forEach((w) => {
     const b = document.createElement('button');
@@ -2422,15 +2444,10 @@ function renderDrawTools(t) {
     b.title = ['Fino', 'Médio', 'Grosso'][w - 1];
     b.innerHTML = `<i style="width:${w * 4 + 2}px;height:${w * 4 + 2}px"></i>`;
     b.addEventListener('click', (e) => { e.stopPropagation(); setDrawSize(w); });
-    box.appendChild(b);
+    row2.appendChild(b);
   });
-  box.appendChild(mkSep());
 
-  box.appendChild(mkTool('↩', 'Desfazer último traço (Ctrl+Z)', false, () => undoDraw(t.peerId)));
-  box.appendChild(mkTool('🧹', 'Limpar todos os desenhos', false, () => {
-    state.drawHistory = state.drawHistory.filter((x) => x.ownerId !== t.peerId);
-    sendAnnot(t.peerId, { type: 'clear' });
-  }));
+  box.append(row1, row2);
 }
 
 function refreshDrawTools() {
@@ -3030,6 +3047,9 @@ const ICON_PEN = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="cu
 const ICON_MOUSE = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M13 1.07V9h7c0-4.08-3.05-7.44-7-7.93zM4 15c0 4.42 3.58 8 8 8s8-3.58 8-8v-4H4v4zm7-13.93C7.05 1.56 4 4.92 4 9h7V1.07z"/></svg>';
 const ICON_KBD = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>';
 const ICON_HIDE = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
+const ICON_SHOT = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 3 7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></svg>';
+const ICON_PASTE = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 2h-4.18C14.4.84 13.3 0 12 0S9.6.84 9.18 2H5a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm-7 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm7 18H5V4h2v3h10V4h2v16z"/></svg>';
+const ICON_QCHAT = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 14H5.2L4 17.2V4h16v12z"/></svg>';
 
 function addTile({ key, kind, local, stream, peerId }) {
   let t = tiles.get(key);
@@ -3049,12 +3069,12 @@ function addTile({ key, kind, local, stream, peerId }) {
         <span></span>
         <span class="tile-actions">
           ${isScreen && !local && IS_MOBILE ? `<button class="icon-btn b-kbd hidden" title="Abrir o teclado pra digitar no PC">${ICON_KBD}</button>` : ''}
-          ${isScreen && !local ? `<button class="icon-btn b-paste hidden" title="Colar texto da área de transferência no PC controlado">📋</button>` : ''}
-          ${isScreen && !local ? `<button class="icon-btn b-qchat hidden" title="Mensagem rápida no mouse (Ctrl+Alt+T)">💬</button>` : ''}
+          ${isScreen && !local ? `<button class="icon-btn b-paste hidden" title="Colar texto da área de transferência no PC controlado">${ICON_PASTE}</button>` : ''}
+          ${isScreen && !local ? `<button class="icon-btn b-qchat hidden" title="Mensagem rápida no mouse (Ctrl+Alt+T)">${ICON_QCHAT}</button>` : ''}
           ${isScreen && !local ? `<button class="icon-btn b-ctrl hidden" title="Pedir pra controlar essa tela">${ICON_MOUSE}</button>` : ''}
           ${isScreen && !local ? `<button class="icon-btn b-annot hidden" title="Apontar/desenhar na tela">${ICON_PEN}</button>` : ''}
           ${local && isScreen ? `<button class="icon-btn b-preview" title="Ocultar/mostrar minha prévia">${ICON_EYE}</button>` : ''}
-          <button class="icon-btn b-shot" title="Tirar print deste vídeo (copia pro clipboard)">📸</button>
+          <button class="icon-btn b-shot" title="Tirar print deste vídeo (copia pro clipboard)">${ICON_SHOT}</button>
           ${pipOk ? `<button class="icon-btn b-pip" title="Janela flutuante (por cima de tudo)">${ICON_PIP}</button>` : ''}
           <button class="icon-btn b-focus" title="Destacar">${ICON_FOCUS}</button>
           <button class="icon-btn b-full" title="Tela cheia">${ICON_FULL}</button>
@@ -3423,6 +3443,7 @@ function leaveRoom(reason) {
   stopCamera();
   closeQuickChat();
   toggleCinema(false);
+  clearUnread();
   closePicker();
   closeSettings();
   closeMenus();
@@ -3607,6 +3628,25 @@ function buildChatShell(from, mine) {
   return { el, body };
 }
 
+function bumpUnread() {
+  if (!$('#side').classList.contains('collapsed')) return;
+  state.unreadCount = Math.min(99, (state.unreadCount || 0) + 1);
+  const dot = $('#unread');
+  if (dot) {
+    dot.textContent = state.unreadCount > 9 ? '9+' : String(state.unreadCount);
+    dot.classList.remove('hidden');
+  }
+}
+
+function clearUnread() {
+  state.unreadCount = 0;
+  const dot = $('#unread');
+  if (dot) {
+    dot.textContent = '';
+    dot.classList.add('hidden');
+  }
+}
+
 function addChat(from, text, mine) {
   const { el, body } = buildChatShell(from, mine);
   const txt = document.createElement('div');
@@ -3614,7 +3654,7 @@ function addChat(from, text, mine) {
   renderRichText(txt, text);
   body.appendChild(txt);
   appendToChat(el);
-  if (!mine && $('#side').classList.contains('collapsed')) $('#unread').classList.remove('hidden');
+  if (!mine) bumpUnread();
 }
 
 function addChatImage(from, dataUrl, mine) {
@@ -3627,7 +3667,7 @@ function addChatImage(from, dataUrl, mine) {
   img.addEventListener('click', () => img.classList.toggle('expanded'));
   body.appendChild(img);
   appendToChat(el);
-  if (!mine && $('#side').classList.contains('collapsed')) $('#unread').classList.remove('hidden');
+  if (!mine) bumpUnread();
 }
 
 function sendChatMessage(rawText) {
@@ -4327,7 +4367,7 @@ async function init() {
     side.classList.toggle('collapsed');
     $('#chatBtn').classList.toggle('on', !side.classList.contains('collapsed'));
     if (!side.classList.contains('collapsed')) {
-      $('#unread').classList.add('hidden');
+      clearUnread();
       $('#chatInput').focus();
     }
     layoutGrid();
