@@ -38,6 +38,7 @@ const {
   flipFirst, iceFlag, answerWaits, cleanTurn,
   cleanSignalServer, formatSignalServer, buildPeerOptions, backoffDelay,
   collectPcStats, UploadHealthMonitor, runNetworkDiagnostic,
+  splitChatLinks, isValidChatImage,
 } = window.TelinhaLib;
 
 // Quem bate primeiro numa conexão nova faz diferença: alguns roteadores/CGNAT trocam a porta de
@@ -1244,7 +1245,7 @@ async function handleData(p, d) {
       }
       break;
     case 'chat-img':
-      if (typeof d.img === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(d.img) && d.img.length < 220000) {
+      if (isValidChatImage(d.img)) {
         addChatImage(p, d.img, false);
         if (document.hidden || !document.hasFocus() || $('#side').classList.contains('collapsed')) beep('chat');
       }
@@ -3164,22 +3165,58 @@ function setupTileZoom(t) {
   }, { passive: false });
 
   let pan = null;
+  const pinchPts = new Map();
+  let pinch = null;
   t.el.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.tile-bar, .draw-tools, .zoom-reset')) return;
+    if (e.pointerType === 'touch' && !t.el.classList.contains('drawing') && !t.el.classList.contains('controlling')) {
+      pinchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinchPts.size === 2) {
+        pan = null;
+        const [a, b] = [...pinchPts.values()];
+        pinch = {
+          dist: Math.max(10, Math.hypot(b.x - a.x, b.y - a.y)),
+          s0: z.s,
+          x0: z.x,
+          y0: z.y,
+          mx: (a.x + b.x) / 2,
+          my: (a.y + b.y) / 2,
+        };
+        return;
+      }
+    }
     if (z.s <= 1.01) return;
     const isMiddle = e.button === 1;
     const canDrag = isMiddle || (e.button === 0 && !t.el.classList.contains('drawing') && !t.el.classList.contains('controlling'));
-    if (!canDrag || e.target.closest('.tile-bar, .draw-tools, .zoom-reset')) return;
+    if (!canDrag) return;
     e.preventDefault();
     pan = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: z.x, oy: z.y };
     t.el.setPointerCapture(e.pointerId);
   });
   t.el.addEventListener('pointermove', (e) => {
+    if (pinchPts.has(e.pointerId)) {
+      pinchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && pinchPts.size === 2) {
+        const [a, b] = [...pinchPts.values()];
+        const dist = Math.max(10, Math.hypot(b.x - a.x, b.y - a.y));
+        const mx = (a.x + b.x) / 2;
+        const my = (a.y + b.y) / 2;
+        z.s = Math.max(1, Math.min(4, pinch.s0 * (dist / pinch.dist)));
+        if (z.s <= 1.02) { reset(); return; }
+        z.x = pinch.x0 + (mx - pinch.mx);
+        z.y = pinch.y0 + (my - pinch.my);
+        apply();
+        return;
+      }
+    }
     if (!pan || e.pointerId !== pan.id) return;
     z.x = pan.ox + (e.clientX - pan.sx);
     z.y = pan.oy + (e.clientY - pan.sy);
     apply();
   });
   const endPan = (e) => {
+    pinchPts.delete(e.pointerId);
+    if (pinchPts.size < 2) pinch = null;
     if (!pan || e.pointerId !== pan.id) return;
     pan = null;
     try { t.el.releasePointerCapture(e.pointerId); } catch {}
@@ -3520,22 +3557,19 @@ function openExternalUrl(url) {
 }
 
 function renderRichText(container, text) {
-  const re = /(https?:\/\/[^\s<>"']+)/gi;
-  let last = 0;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
-    const url = m[0];
-    const a = document.createElement('a');
-    a.className = 'chat-link';
-    a.href = '#';
-    a.textContent = url;
-    a.title = url;
-    a.addEventListener('click', (e) => { e.preventDefault(); openExternalUrl(url); });
-    container.appendChild(a);
-    last = m.index + url.length;
+  for (const part of splitChatLinks(text)) {
+    if (part.type === 'link') {
+      const a = document.createElement('a');
+      a.className = 'chat-link';
+      a.href = '#';
+      a.textContent = part.value;
+      a.title = part.value;
+      a.addEventListener('click', (e) => { e.preventDefault(); openExternalUrl(part.value); });
+      container.appendChild(a);
+    } else {
+      container.appendChild(document.createTextNode(part.value));
+    }
   }
-  if (last < text.length) container.appendChild(document.createTextNode(text.slice(last)));
 }
 
 function isGroupedMsg(senderKey) {

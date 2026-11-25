@@ -10,6 +10,7 @@ const prefs = require('../src/renderer/lib/prefs.js');
 const keymap = require('../src/renderer/lib/keymap.js');
 const net = require('../src/renderer/lib/net.js');
 const stats = require('../src/renderer/lib/stats.js');
+const chatUtils = require('../src/renderer/lib/chat-utils.js');
 
 test('prefs: memória segura, JSON corrompido e sanitização', () => {
   prefs.savePref('testKey', 'valor123');
@@ -175,4 +176,22 @@ test('annot: balão de chat no ponteiro, controle remoto e clamp na borda', () =
   layer.draw();
   assert.equal(ellipses, 0);
   assert.equal(lines, 0);
+
+  // Modo Desenho Real (fixo): retângulo, hitTest e borracha (erase)
+  layer.handle({ type: 'shape', kind: 'rect', sid: 'r1', from: 'p1', color: '#D4A373', w: 2, x1: 0.2, y1: 0.2, x2: 0.5, y2: 0.5, pin: true, preview: false });
+  assert.equal(layer.hitTest(0.2, 0.35), 'r1');
+  assert.equal(layer.hitTest(0.9, 0.9), null);
+  layer.handle({ type: 'erase', id: 'r1' });
+  assert.equal(layer.hitTest(0.2, 0.35), null);
+});
+
+test('chat-utils: links seguros e validação de imagem', () => {
+  const parts = chatUtils.splitChatLinks('olha https://fatecafe.com.br aqui');
+  assert.deepEqual(parts, [
+    { type: 'text', value: 'olha ' },
+    { type: 'link', value: 'https://fatecafe.com.br' },
+    { type: 'text', value: ' aqui' },
+  ]);
+  assert.equal(chatUtils.isValidChatImage('data:image/jpeg;base64,AAAA'), true);
+  assert.equal(chatUtils.isValidChatImage('javascript:alert(1)'), false);
 });

@@ -35,14 +35,33 @@ public class ScreenSharePlugin extends Plugin {
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
+    private DisplayManager displayManager;
+    private DisplayManager.DisplayListener displayListener;
     private HandlerThread captureThread;
     private Handler captureHandler;
     private long lastFrameMs = 0;
+    private int maxSidePx = 720;
     private int targetWidth = 720;
     private int targetHeight = 1280;
     private int targetFps = 18;
     private int jpegQuality = 72;
     private boolean running = false;
+
+    private int[] computeTargetSize() {
+        DisplayMetrics dm = new DisplayMetrics();
+        WindowManager wm = (WindowManager) getContext().getSystemService(Context.WINDOW_SERVICE);
+        if (wm != null && wm.getDefaultDisplay() != null) {
+            wm.getDefaultDisplay().getRealMetrics(dm);
+        } else {
+            dm = getContext().getResources().getDisplayMetrics();
+        }
+        int sw = Math.max(1, dm.widthPixels);
+        int sh = Math.max(1, dm.heightPixels);
+        float scale = Math.min(1f, (float) maxSidePx / Math.max(sw, sh));
+        int w = Math.max(2, (Math.round(sw * scale) / 2) * 2);
+        int h = Math.max(2, (Math.round(sh * scale) / 2) * 2);
+        return new int[]{ w, h, dm.densityDpi };
+    }
 
     @PluginMethod
     public void start(PluginCall call) {
@@ -53,22 +72,13 @@ public class ScreenSharePlugin extends Plugin {
             call.resolve(ret);
             return;
         }
-        int maxSide = Math.max(360, Math.min(1280, call.getInt("maxSide", 720)));
+        maxSidePx = Math.max(360, Math.min(1280, call.getInt("maxSide", 720)));
         targetFps = Math.max(8, Math.min(30, call.getInt("fps", 18)));
         jpegQuality = Math.max(40, Math.min(90, call.getInt("quality", 72)));
 
-        DisplayMetrics dm = new DisplayMetrics();
-        WindowManager wm = (WindowManager) getContext().getSystemService(Context.WINDOW_SERVICE);
-        if (wm != null && wm.getDefaultDisplay() != null) {
-            wm.getDefaultDisplay().getRealMetrics(dm);
-        } else {
-            dm = getContext().getResources().getDisplayMetrics();
-        }
-        int sw = Math.max(1, dm.widthPixels);
-        int sh = Math.max(1, dm.heightPixels);
-        float scale = Math.min(1f, (float) maxSide / Math.max(sw, sh));
-        targetWidth = Math.max(2, (Math.round(sw * scale) / 2) * 2);
-        targetHeight = Math.max(2, (Math.round(sh * scale) / 2) * 2);
+        int[] sz = computeTargetSize();
+        targetWidth = sz[0];
+        targetHeight = sz[1];
 
         MediaProjectionManager mpm = (MediaProjectionManager) getContext().getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         if (mpm == null) {
@@ -139,6 +149,31 @@ public class ScreenSharePlugin extends Plugin {
                 captureHandler
             );
 
+            ScreenShareService.setOnStopRequested(() -> stopInternal(true));
+            displayManager = (DisplayManager) getContext().getSystemService(Context.DISPLAY_SERVICE);
+            if (displayManager != null) {
+                displayListener = new DisplayManager.DisplayListener() {
+                    @Override public void onDisplayAdded(int displayId) {}
+                    @Override public void onDisplayRemoved(int displayId) {}
+                    @Override
+                    public void onDisplayChanged(int displayId) {
+                        if (!running || virtualDisplay == null) return;
+                        int[] sz = computeTargetSize();
+                        if (sz[0] == targetWidth && sz[1] == targetHeight) return;
+                        targetWidth = sz[0];
+                        targetHeight = sz[1];
+                        ImageReader oldReader = imageReader;
+                        ImageReader nextReader = ImageReader.newInstance(targetWidth, targetHeight, PixelFormat.RGBA_8888, 2);
+                        nextReader.setOnImageAvailableListener(ScreenSharePlugin.this::onFrameAvailable, captureHandler);
+                        imageReader = nextReader;
+                        virtualDisplay.resize(targetWidth, targetHeight, sz[2]);
+                        virtualDisplay.setSurface(nextReader.getSurface());
+                        if (oldReader != null) { try { oldReader.close(); } catch (Throwable ignored) {} }
+                    }
+                };
+                displayManager.registerDisplayListener(displayListener, captureHandler);
+            }
+
             running = true;
             JSObject ret = new JSObject();
             ret.put("width", targetWidth);
@@ -204,6 +239,12 @@ public class ScreenSharePlugin extends Plugin {
 
     private synchronized void stopInternal(boolean notify) {
         running = false;
+        ScreenShareService.setOnReady(null);
+        ScreenShareService.setOnStopRequested(null);
+        if (displayManager != null && displayListener != null) {
+            try { displayManager.unregisterDisplayListener(displayListener); } catch (Throwable ignored) {}
+            displayListener = null;
+        }
         if (virtualDisplay != null) {
             try { virtualDisplay.release(); } catch (Throwable ignored) {}
             virtualDisplay = null;
