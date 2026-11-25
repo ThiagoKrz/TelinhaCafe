@@ -27,7 +27,14 @@
     onControlEnded: noop,
     onAudioData: noop,
     onAudioStatus: noop,
-    onDeepLink: noop,
+    onDeepLink(cb) {
+      window.__telinhaDeepLinkCb = cb;
+      if (window.__telinhaPendingCode) {
+        const c = window.__telinhaPendingCode;
+        window.__telinhaPendingCode = null;
+        cb(c);
+      }
+    },
     async readClipboard() {
       try { return (await navigator.clipboard.readText()) || ''; } catch { return ''; }
     },
@@ -135,6 +142,11 @@
       window.__mobileScreenCleanup = null;
       if (fn) await fn();
     },
+  };
+
+  window.__telinhaDeepLink = (code) => {
+    if (typeof window.__telinhaDeepLinkCb === 'function') window.__telinhaDeepLinkCb(code);
+    else window.__telinhaPendingCode = code;
   };
 
   document.documentElement.classList.add('mobile');

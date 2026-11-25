@@ -549,13 +549,14 @@ ipcMain.handle('install-update', async (_e, { downloadUrl, assetName, releaseUrl
   updating = true;
   const safeName = String(assetName || 'TelinhaCafe-Setup-update.exe').replace(/[^a-zA-Z0-9._-]/g, '');
   const dest = path.join(app.getPath('temp'), safeName);
+  let out = null;
   try {
     sendToRenderer('update-progress', { pct: 0, phase: 'downloading' });
     const res = await fetch(downloadUrl, { headers: { 'User-Agent': `TelinhaCafe/${app.getVersion()}` } });
     if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
     const total = Number(res.headers.get('content-length') || 0);
     let received = 0;
-    const out = fs.createWriteStream(dest);
+    out = fs.createWriteStream(dest);
     const reader = res.body.getReader();
     let lastPct = -1;
     while (true) {
@@ -572,6 +573,7 @@ ipcMain.handle('install-update', async (_e, { downloadUrl, assetName, releaseUrl
       }
     }
     await new Promise((r, rej) => { out.end(r); out.on('error', rej); });
+    out = null;
     const stat = fs.statSync(dest);
     if (stat.size < 1024 * 1024) throw new Error('Arquivo baixado parece incompleto.');
     sendToRenderer('update-progress', { pct: 100, phase: 'installing' });
@@ -582,6 +584,7 @@ ipcMain.handle('install-update', async (_e, { downloadUrl, assetName, releaseUrl
     setTimeout(() => app.quit(), 350);
     return { ok: true };
   } catch (e) {
+    try { if (out) out.destroy(); } catch {}
     try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch {}
     return { ok: false, error: (e && e.message) || 'Falha ao baixar atualização.' };
   } finally {

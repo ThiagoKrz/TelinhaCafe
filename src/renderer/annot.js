@@ -431,6 +431,12 @@
         g.shadowBlur = 4;
       }
 
+      for (const [id, pos] of this.lastPos) {
+        if (!this.pointers.has(id) && !this.chats.has(id) && now - pos.t > LAST_POS_TTL) {
+          this.lastPos.delete(id);
+        }
+      }
+
       g.globalAlpha = 1;
       if (alive) this.kick();
     }

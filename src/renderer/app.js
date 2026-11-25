@@ -940,31 +940,37 @@ function heartbeat() {
   pollTelemetry();
 }
 
+let telemetryBusy = false;
 async function pollTelemetry() {
-  if (!state.inRoom || state.leaving) return;
-  const rows = [];
-  const outScreen = [];
-  for (const p of state.peers.values()) {
-    for (const kind of ['screen', 'camera']) {
-      for (const dir of ['out', 'in']) {
-        const call = p[dir] && p[dir][kind];
-        const pc = call && call.peerConnection;
-        if (!pc) continue;
-        const st = await collectPcStats(pc, state.statsPrev.get(pc));
-        if (!st) continue;
-        state.statsPrev.set(pc, st.snapshot);
-        rows.push({ peer: p.name, kind, dir, ...st });
-        if (dir === 'out' && kind === 'screen') outScreen.push(st);
+  if (!state.inRoom || state.leaving || telemetryBusy) return;
+  telemetryBusy = true;
+  try {
+    const rows = [];
+    const outScreen = [];
+    for (const p of state.peers.values()) {
+      for (const kind of ['screen', 'camera']) {
+        for (const dir of ['out', 'in']) {
+          const call = p[dir] && p[dir][kind];
+          const pc = call && call.peerConnection;
+          if (!pc) continue;
+          const st = await collectPcStats(pc, state.statsPrev.get(pc));
+          if (!st) continue;
+          state.statsPrev.set(pc, st.snapshot);
+          rows.push({ peer: p.name, kind, dir, ...st });
+          if (dir === 'out' && kind === 'screen') outScreen.push(st);
+        }
       }
     }
+    state.lastTelemetry = rows;
+    const alert = state.uploadMonitor.sample(outScreen);
+    if (alert && (state.quality === '1080p60' || state.quality === 'max60')) {
+      toast(`Seu upload está no limite (~${alert.avgKbps} kbps). Se travar pros amigos, tente baixar a qualidade no seletor lá em cima.`);
+    }
+    const telBox = document.getElementById('telemetryLive');
+    if (telBox && !$('#settings').classList.contains('hidden')) renderTelemetryTable(telBox);
+  } finally {
+    telemetryBusy = false;
   }
-  state.lastTelemetry = rows;
-  const alert = state.uploadMonitor.sample(outScreen);
-  if (alert && (state.quality === '1080p60' || state.quality === 'max60')) {
-    toast(`Seu upload está no limite (~${alert.avgKbps} kbps). Se travar pros amigos, tente baixar a qualidade no seletor lá em cima.`);
-  }
-  const telBox = document.getElementById('telemetryLive');
-  if (telBox && !$('#settings').classList.contains('hidden')) renderTelemetryTable(telBox);
 }
 
 function renderTelemetryTable(el) {
@@ -3166,6 +3172,8 @@ function leaveRoom(reason) {
   broadcast({ t: 'bye' });
   stopScreen();
   stopCamera();
+  closeQuickChat();
+  toggleCinema(false);
   closePicker();
   closeSettings();
   closeMenus();
@@ -4120,47 +4128,6 @@ async function init() {
   $('#pickerCancel').addEventListener('click', closePicker);
   $('#pickerShare').addEventListener('click', confirmPicker);
   $('#picker').addEventListener('mousedown', (e) => { if (e.target.id === 'picker') closePicker(); });
-function toggleCinema(force) {
-  const room = $('#room');
-  const on = typeof force === 'boolean' ? force : !room.classList.contains('cinema');
-  room.classList.toggle('cinema', on);
-  $('#cinemaBtn').classList.toggle('on', on);
-  $('#cinemaExit').classList.toggle('hidden', !on);
-  layoutGrid();
-}
-
-function setupSideResize() {
-  const handle = $('#sideResize');
-  const side = $('#side');
-  if (!handle || !side) return;
-  const saved = Number(loadPref('sideWidth', '0'));
-  if (saved >= 240 && saved <= 520) side.style.width = saved + 'px';
-  let drag = null;
-  handle.addEventListener('pointerdown', (e) => {
-    if (side.classList.contains('collapsed')) return;
-    e.preventDefault();
-    drag = { id: e.pointerId, sx: e.clientX, sw: side.getBoundingClientRect().width };
-    handle.classList.add('dragging');
-    handle.setPointerCapture(e.pointerId);
-  });
-  handle.addEventListener('pointermove', (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    const w = Math.max(240, Math.min(520, Math.round(drag.sw + (drag.sx - e.clientX))));
-    side.style.width = w + 'px';
-    layoutGrid();
-  });
-  const end = (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    const w = Math.round(side.getBoundingClientRect().width);
-    if (w >= 240 && w <= 520) savePref('sideWidth', String(w));
-    handle.classList.remove('dragging');
-    drag = null;
-    try { handle.releasePointerCapture(e.pointerId); } catch {}
-  };
-  handle.addEventListener('pointerup', end);
-  handle.addEventListener('pointercancel', end);
-}
-
   document.addEventListener('keydown', (e) => {
     const tag = document.activeElement && document.activeElement.tagName;
     const inField = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
@@ -4215,6 +4182,50 @@ function setupSideResize() {
     });
   }
   setTimeout(() => checkForUpdates(false), 1500);
+}
+
+function toggleCinema(force) {
+  const room = $('#room');
+  if (!room) return;
+  const on = typeof force === 'boolean' ? force : !room.classList.contains('cinema');
+  room.classList.toggle('cinema', on);
+  const btn = $('#cinemaBtn');
+  if (btn) btn.classList.toggle('on', on);
+  const exit = $('#cinemaExit');
+  if (exit) exit.classList.toggle('hidden', !on);
+  layoutGrid();
+}
+
+function setupSideResize() {
+  const handle = $('#sideResize');
+  const side = $('#side');
+  if (!handle || !side) return;
+  const saved = Number(loadPref('sideWidth', '0'));
+  if (saved >= 240 && saved <= 520) side.style.width = saved + 'px';
+  let drag = null;
+  handle.addEventListener('pointerdown', (e) => {
+    if (side.classList.contains('collapsed')) return;
+    e.preventDefault();
+    drag = { id: e.pointerId, sx: e.clientX, sw: side.getBoundingClientRect().width };
+    handle.classList.add('dragging');
+    handle.setPointerCapture(e.pointerId);
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const w = Math.max(240, Math.min(520, Math.round(drag.sw + (drag.sx - e.clientX))));
+    side.style.width = w + 'px';
+    layoutGrid();
+  });
+  const end = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const w = Math.round(side.getBoundingClientRect().width);
+    if (w >= 240 && w <= 520) savePref('sideWidth', String(w));
+    handle.classList.remove('dragging');
+    drag = null;
+    try { handle.releasePointerCapture(e.pointerId); } catch {}
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
 }
 
 init();

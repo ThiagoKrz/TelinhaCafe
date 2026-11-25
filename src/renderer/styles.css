@@ -486,7 +486,8 @@ legend { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color
 .audio-vu i { display: block; height: 100%; width: 0%; background: #86C07A; border-radius: 99px; transition: width 80ms linear; }
 .side-resize { width: 5px; cursor: col-resize; background: transparent; transition: background .15s; flex: 0 0 5px; }
 .side-resize:hover, .side-resize.dragging { background: var(--accent-soft-2); }
-#side.collapsed + .side-resize, #room.cinema .side-resize { display: none; }
+.side-resize:has(+ #side.collapsed), #room.cinema .side-resize { display: none; }
+@media (max-width: 900px) { .side-resize { display: none; } }
 #room.cinema .topbar, #room.cinema #side { display: none; }
 #room.cinema #stage { padding: 4px; }
 .cinema-exit {

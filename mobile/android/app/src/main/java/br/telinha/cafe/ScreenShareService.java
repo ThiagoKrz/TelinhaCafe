@@ -15,6 +15,11 @@ import androidx.core.app.NotificationCompat;
 public class ScreenShareService extends Service {
     public static final String CHANNEL_ID = "telinha_screen_share";
     public static final int NOTIF_ID = 4102;
+    private static volatile Runnable pendingReady;
+
+    public static void setOnReady(Runnable r) {
+        pendingReady = r;
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -41,6 +46,9 @@ public class ScreenShareService extends Service {
         } else {
             startForeground(NOTIF_ID, notif);
         }
+        Runnable r = pendingReady;
+        pendingReady = null;
+        if (r != null) r.run();
         return START_NOT_STICKY;
     }
 

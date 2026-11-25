@@ -87,15 +87,26 @@ public class ScreenSharePlugin extends Plugin {
             return;
         }
         try {
+            final int resultCode = result.getResultCode();
+            final Intent resultData = result.getData();
+            ScreenShareService.setOnReady(() -> startProjectionAfterService(call, resultCode, resultData));
             Intent svc = new Intent(getContext(), ScreenShareService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 getContext().startForegroundService(svc);
             } else {
                 getContext().startService(svc);
             }
+        } catch (Exception e) {
+            ScreenShareService.setOnReady(null);
+            stopInternal(false);
+            call.reject("Erro ao iniciar serviço de captura: " + e.getMessage());
+        }
+    }
 
+    private void startProjectionAfterService(PluginCall call, int resultCode, Intent resultData) {
+        try {
             MediaProjectionManager mpm = (MediaProjectionManager) getContext().getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-            mediaProjection = mpm.getMediaProjection(result.getResultCode(), result.getData());
+            mediaProjection = mpm.getMediaProjection(resultCode, resultData);
             if (mediaProjection == null) {
                 stopInternal(false);
                 call.reject("Não foi possível iniciar a captura de tela.");
